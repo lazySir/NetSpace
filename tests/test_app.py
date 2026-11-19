@@ -4,6 +4,8 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import sqlite3
+import tempfile
 import threading
 import time
 import unittest
@@ -65,6 +67,53 @@ class LocalServerTests(unittest.TestCase):
         status, state = self.request('/api/state')
         self.assertEqual(state['status'], 'idle')
         self.assertIsNone(state['result'])
+
+    def test_backup_download_is_integral_validated_and_keeps_internal_paths_private(self):
+        store = self.server.state.store
+        result = {'interface': self.interfaces[0],
+                  'devices': [{'id': '192.168.50.20', 'ip': '192.168.50.20', 'kind': 'self'}],
+                  'links': [], 'warnings': [], 'scope': {'cidr': '192.168.50.0/24'},
+                  'scannedAt': '2026-11-20T00:00:00+00:00', 'durationMs': 1}
+        saved = store.record_scan(result)
+        store.update_profile(saved['networkId'], saved['devices'][0]['deviceKey'],
+                             {'alias': '可导出的设备资料'})
+        store.record_scan({**result, 'devices': result['devices'] + [
+            {'id': '192.168.50.31', 'ip': '192.168.50.31', 'kind': 'device', 'hostname': 'NAS'}]})
+        store.set_settings({'notificationsEnabled': False})
+
+        request = urllib.request.Request(self.base + '/api/backup')
+        with urllib.request.urlopen(request, timeout=3) as response:
+            body = response.read()
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.headers.get('Content-Type'), 'application/vnd.sqlite3')
+            self.assertIn('attachment; filename="NetSpace-backup-', response.headers.get('Content-Disposition'))
+            self.assertTrue(response.headers.get('Content-Disposition').endswith('.db"'))
+            self.assertEqual(response.headers.get('Cache-Control'), 'no-store')
+            self.assertEqual(response.headers.get('X-Content-Type-Options'), 'nosniff')
+            self.assertEqual(int(response.headers.get('Content-Length')), len(body))
+        self.assertTrue(body.startswith(b'SQLite format 3\x00'))
+        with tempfile.TemporaryDirectory() as directory:
+            backup_path = Path(directory) / 'download.db'
+            backup_path.write_bytes(body)
+            backup = sqlite3.connect(str(backup_path))
+            try:
+                self.assertEqual(backup.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+                self.assertEqual(backup.execute('SELECT value FROM settings WHERE key = ?',
+                                                ('notificationsEnabled',)).fetchone()[0], 'false')
+                self.assertIn('可导出的设备资料', backup.execute('SELECT profile FROM devices').fetchone()[0])
+                self.assertGreater(backup.execute('SELECT COUNT(*) FROM scans').fetchone()[0], 1)
+                self.assertEqual(backup.execute('SELECT kind FROM events').fetchone()[0], 'new')
+            finally:
+                backup.close()
+
+        self.assertEqual(self.request('/api/backup?path=C:/private.db')[0], 400)
+        self.assertEqual(self.request('/api/backup', headers={'Origin': 'https://other.example'})[0], 403)
+        with mock.patch.object(store, 'backup_to', side_effect=RuntimeError('private filesystem path')):
+            with self.assertLogs('netspace', level='ERROR'):
+                status, error = self.request('/api/backup')
+        self.assertEqual(status, 503)
+        self.assertIn('备份', error['error'])
+        self.assertNotIn('private filesystem path', error['error'])
 
     def test_scan_completes_and_preserves_result(self):
         status, _ = self.request('/api/scan', {'interfaceId': '7'})

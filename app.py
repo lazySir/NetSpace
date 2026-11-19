@@ -2,6 +2,7 @@
 import argparse
 import base64
 import copy
+import datetime
 import hashlib
 from functools import lru_cache
 import json
@@ -10,8 +11,10 @@ import mimetypes
 import os
 from pathlib import Path
 import re
+import sqlite3
 import socket
 import sys
+import tempfile
 import threading
 from concurrent.futures import CancelledError
 import urllib.request
@@ -24,7 +27,7 @@ from monitoring import MonitorController
 from network_store import NetworkStore
 
 
-VERSION = '1.9.0'
+VERSION = '1.10.0'
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
 LOGGER = logging.getLogger('netspace')
@@ -245,6 +248,50 @@ class RequestHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _respond_file(self, path, filename, content_type):
+        size = os.path.getsize(path)
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', str(size))
+        self.send_header('Content-Disposition', 'attachment; filename="{}"'.format(filename))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Security-Policy', content_security_policy())
+        self.send_header('Connection', 'close')
+        self.end_headers()
+        try:
+            with open(path, 'rb') as backup_file:
+                while True:
+                    chunk = backup_file.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except OSError:
+            LOGGER.exception('Cannot stream local database backup')
+            self.close_connection = True
+
+    def _send_backup(self):
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
+        filename = 'NetSpace-backup-{}.db'.format(stamp)
+        try:
+            with tempfile.TemporaryDirectory(prefix='netspace-backup-') as directory:
+                path = os.path.join(directory, filename)
+                destination = sqlite3.connect(path, timeout=15)
+                try:
+                    self.server.state.store.backup_to(destination)
+                    if destination.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                        raise sqlite3.DatabaseError('Backup integrity check failed')
+                finally:
+                    destination.close()
+                self._respond_file(path, filename, 'application/vnd.sqlite3')
+        except Exception:
+            LOGGER.exception('Cannot create local database backup')
+            self._respond(503, {'error': '无法生成本地数据备份，请稍后重试。'})
+
     def _trusted(self):
         port = self.server.server_port
         allowed_hosts = {'127.0.0.1:{}'.format(port), 'localhost:{}'.format(port)}
@@ -266,6 +313,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == '/api/health':
             self._respond(200, {'app': 'NetSpace', 'version': VERSION})
+        elif path == '/api/backup':
+            if urlsplit(self.path).query:
+                self._respond(400, {'error': '备份接口不接受查询参数'})
+            else:
+                self._send_backup()
         elif path == '/api/interfaces':
             try:
                 self._respond(200, {'interfaces': self.server.state.get_interfaces(), 'error': None})

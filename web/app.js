@@ -31,6 +31,7 @@ let lastRealSelection = null;
 let demoResult = null;
 let joinedScan = false;
 let workspace = null;
+let backupInProgress = false;
 
 function makeDemoResult() {
   const records = [
@@ -273,6 +274,8 @@ function render() {
   text('scan-button-text', stopped ? '服务已停止' : scanning ? '正在发现…' : '发现设备');
   ui['export-button'].disabled = !result;
   ui['export-csv-button'].disabled = !result || !visibleDevices.length;
+  ui['backup-button'].disabled = stopped || booting || backupInProgress;
+  if (!backupInProgress) ui['backup-button'].textContent = '备份本地数据';
   ui['scan-progress'].hidden = !scanning || demo || historical;
   const progress = realState.progress || {};
   text('progress-message', progress.message || '正在发现设备…');
@@ -349,6 +352,39 @@ ui['export-csv-button'].addEventListener('click', () => {
   anchor.download = 'netspace-' + (demo ? 'DEMO-' : historical ? 'HISTORY-' : '') + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
   document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   showToast('已导出 ' + visibleDevices.length + ' 台可见设备的 CSV 表格');
+});
+ui['backup-button'].addEventListener('click', async () => {
+  if (stopped || booting || backupInProgress) return;
+  backupInProgress = true;
+  ui['backup-button'].disabled = true;
+  ui['backup-button'].textContent = '正在生成备份…';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch('/api/backup', { cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/vnd.sqlite3' } });
+    if (!response.ok) {
+      let message = '本地数据备份失败，请重试。';
+      try { message = (await response.json()).error || message; } catch {}
+      throw new Error(message);
+    }
+    if (response.headers.get('Content-Type') !== 'application/vnd.sqlite3') throw new Error('备份文件格式无法识别，请重试。');
+    const blob = await response.blob();
+    if (!blob.size) throw new Error('本地数据备份为空，请重试。');
+    const disposition = response.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename="(NetSpace-backup-[0-9-]+\.db)"/);
+    if (!match) throw new Error('备份文件名称无效，请重试。');
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = match[1];
+    document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('本地数据备份已下载，请妥善保管。');
+  } catch (error) {
+    showToast(error.name === 'AbortError' ? '生成备份超时，请重试。' : error instanceof TypeError ? '无法连接本机服务，请确认程序仍在运行。' : error.message);
+  } finally {
+    clearTimeout(timeout);
+    backupInProgress = false;
+    ui['backup-button'].disabled = stopped;
+    ui['backup-button'].textContent = '备份本地数据';
+  }
 });
 ui['shutdown-button'].addEventListener('click', async () => {
   if (stopped) return;

@@ -4,6 +4,7 @@ from collections import Counter
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -34,6 +35,11 @@ def main():
         with opener.open(req, timeout=3) as response:
             return response.headers
 
+    def request_with_headers(path, timeout=30):
+        req = urllib.request.Request(base + path)
+        with opener.open(req, timeout=timeout) as response:
+            return response.read(), response.headers
+
     try:
         request('/api/health', timeout=1)
     except Exception:
@@ -60,7 +66,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.9.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.10.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -131,6 +137,20 @@ def main():
         assert saved_device['profile']['alias'] == '打包验证电脑'
         assert saved_device['profile']['known'] is True
         assert request('/api/history')['scans'][0]['id'] == first_scan_id
+        backup_bytes, backup_headers = request_with_headers('/api/backup')
+        assert backup_headers.get('Content-Type') == 'application/vnd.sqlite3'
+        assert backup_headers.get('Content-Disposition', '').startswith('attachment; filename="NetSpace-backup-')
+        backup_path = Path(data_folder.name) / 'downloaded-backup.db'
+        backup_path.write_bytes(backup_bytes)
+        downloaded_backup = sqlite3.connect(str(backup_path))
+        try:
+            assert downloaded_backup.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+            assert downloaded_backup.execute('SELECT COUNT(*) FROM scans').fetchone()[0] == 1
+            assert '打包验证电脑' in downloaded_backup.execute(
+                'SELECT profile FROM devices WHERE device_key = ?', (own_device['deviceKey'],)).fetchone()[0]
+        finally:
+            downloaded_backup.close()
+        checks.append('local SQLite backup download and integrity')
         checks.append('profiles, settings and immutable history persist across executable restart')
         enabled = request('/api/monitor', {'enabled': True, 'interfaceId': str(interfaces[0]['id']),
                                            'intervalSeconds': 60})

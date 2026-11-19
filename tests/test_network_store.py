@@ -4,6 +4,7 @@ import math
 import os
 import sqlite3
 import tempfile
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
@@ -70,6 +71,76 @@ class NetworkStoreTests(unittest.TestCase):
         saved = self.store.get_scan(result['scanId'])
         self.assertEqual(saved['devices'][1]['evidence'], before['devices'][1]['evidence'])
         self.assertIsNone(self.store.get_scan(999999))
+
+    def test_online_backup_reopens_with_profiles_history_events_and_settings(self):
+        first = self.store.record_scan(scan(peer()))
+        network_id = first['networkId']
+        device_key = first['devices'][1]['deviceKey']
+        profile = {'alias': '备份设备', 'notes': '仅保存在本机', 'group': '办公',
+                   'known': True, 'ignored': False}
+        self.store.update_profile(network_id, device_key, profile)
+        second = self.store.record_scan(scan(peer(), peer('192.168.50.41', '02:DD:00:00:00:01')))
+        self.store.set_settings({'notificationsEnabled': False})
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'backup.sqlite3')
+            destination = sqlite3.connect(path)
+            try:
+                self.store.backup_to(destination)
+            finally:
+                destination.close()
+
+            copied_db = sqlite3.connect(path)
+            try:
+                self.assertEqual(copied_db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+            finally:
+                copied_db.close()
+            copied = self.store_type(path)
+            try:
+                self.assertEqual(copied.get_settings(), {'notificationsEnabled': False})
+                self.assertEqual(len(copied.list_scans(network_id)), 2)
+                self.assertEqual(copied.get_scan(second['scanId'])['devices'][1]['profile'], profile)
+                self.assertEqual(copied.get_devices(network_id)[1]['profile'], profile)
+                self.assertEqual(copied.list_events()[0]['kind'], 'new')
+            finally:
+                copied.close()
+
+    def test_online_backup_remains_integral_during_concurrent_scan_writes(self):
+        self.store.record_scan(scan(peer()))
+        rendezvous = threading.Barrier(2)
+
+        def write_scans():
+            rendezvous.wait()
+            for index in range(10):
+                address = '192.168.50.{}'.format(40 + index)
+                self.store.record_scan(scan(peer(address, '02:DD:00:00:{:02X}:01'.format(index)),
+                                            at='2026-11-20T00:{:02d}:00+00:00'.format(index)))
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, 'concurrent-backup.sqlite3')
+
+            def create_backup():
+                rendezvous.wait()
+                destination = sqlite3.connect(path)
+                try:
+                    self.store.backup_to(destination)
+                finally:
+                    destination.close()
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                writer = executor.submit(write_scans)
+                backup = executor.submit(create_backup)
+                writer.result(timeout=5)
+                backup.result(timeout=5)
+
+            copied = sqlite3.connect(path)
+            try:
+                self.assertEqual(copied.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
+                count = copied.execute('SELECT COUNT(*) FROM scans').fetchone()[0]
+                self.assertGreaterEqual(count, 1)
+                self.assertLessEqual(count, 11)
+            finally:
+                copied.close()
 
     def test_restart_preserves_profiles_settings_history_and_alert_read_state(self):
         with tempfile.TemporaryDirectory() as directory:

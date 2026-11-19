@@ -455,6 +455,15 @@ class NetworkStore:
                                    (_json(changes['notificationsEnabled']), 'notificationsEnabled'))
             return self.get_settings()
 
+    def backup_to(self, destination):
+        """Copy one consistent snapshot of all local records to a SQLite connection."""
+        if not isinstance(destination, sqlite3.Connection) or destination is self._connection:
+            raise ValueError('备份目标必须是独立的 SQLite 数据库。')
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('本地记录库已关闭。')
+            self._connection.backup(destination)
+
     def close(self):
         with self._lock:
             if not self._closed:

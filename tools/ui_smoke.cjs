@@ -42,6 +42,7 @@ async function run() {
   page.on('console', message => { if (/content security policy/i.test(message.text())) cspViolations.push(message.text()); });
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith(base + '/')) external.push(request.url()); });
   let current = { status: 'idle', progress: { phase: 'idle', completed: 0, total: 0, message: '准备就绪' }, result: null, error: null };
+  let failBackup = false;
   await page.route('**/api/interfaces', route => route.fulfill({ json: { interfaces, error: null } }));
   await page.route('**/api/state', route => route.fulfill({ json: current }));
   await page.route('**/api/scan', async route => {
@@ -49,6 +50,10 @@ async function run() {
     current = { status: 'complete', progress: { phase: 'complete', completed: 253, total: 253, message: '设备发现完成' }, result: resultFor(adapter), error: null };
     await route.fulfill({ status: 202, json: current });
   });
+  await page.route('**/api/backup', route => failBackup
+    ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: '无法生成本地数据备份，请稍后重试。' }) })
+    : route.fulfill({ status: 200, contentType: 'application/vnd.sqlite3', headers: { 'Content-Disposition': 'attachment; filename="NetSpace-backup-20261120-120000-123456.db"', 'Cache-Control': 'no-store' }, body: Buffer.from('SQLite format 3\0fixture') }));
+  await page.route('**/api/shutdown', route => route.fulfill({ json: { status: 'stopped' } }));
   const documentResponse = await page.goto(base, { waitUntil: 'networkidle' });
   const policy = documentResponse.headers()['content-security-policy'] || '';
   assert.match(policy, /default-src 'self'/, 'document response should enforce its CSP');
@@ -67,6 +72,19 @@ async function run() {
   assert.match(theme.metricFont, /Consolas|Cascadia Code/, 'network metrics use a monospace typeface');
   assert.match(theme.topologyGrid, /linear-gradient/, 'topology includes a terminal grid overlay');
   await page.locator('#stat-total').filter({ hasText: '3' }).waitFor();
+  assert.equal(await page.locator('#backup-button').isDisabled(), false, 'backup is enabled after the local service connects');
+  const backupDownloadPromise = page.waitForEvent('download');
+  await page.locator('#backup-button').click();
+  const backupDownload = await backupDownloadPromise;
+  assert.equal(backupDownload.suggestedFilename(), 'NetSpace-backup-20261120-120000-123456.db');
+  await backupDownload.saveAs(path.join(output, 'netspace-backup-fixture.db'));
+  assert.ok(fs.readFileSync(path.join(output, 'netspace-backup-fixture.db')).subarray(0, 15).toString('ascii').startsWith('SQLite format 3'));
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('备份已下载'));
+  failBackup = true;
+  await page.locator('#backup-button').click();
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('无法生成本地数据备份'));
+  assert.equal(await page.locator('#backup-button').isDisabled(), false, 'backup can be retried after a server error');
+  failBackup = false;
   await page.locator('#device-list button').first().click();
   await page.locator('#detail-content').waitFor({ state: 'visible' });
   assert.equal(await page.locator('canvas').count() > 0, true);
@@ -223,10 +241,14 @@ async function run() {
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile layout must not overflow horizontally');
   await page.setViewportSize({ width: 320, height: 800 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'CSV actions must fit the minimum supported 320px viewport');
+  assert.ok(await page.locator('#backup-button').isVisible(), 'local backup action remains visible at 320px');
+  await page.locator('#shutdown-button').click();
+  await page.waitForFunction(() => document.querySelector('#shutdown-button').textContent.includes('已停止'));
   assert.deepEqual(errors, [], 'browser must have no JavaScript runtime errors');
   assert.deepEqual(cspViolations, [], 'browser must report no CSP violations while modules and scene load');
   assert.deepEqual(external, [], 'app must not require any external resources');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'JSON and filtered CSV exports', 'CSV UTF-8 BOM and formula-injection/quoting protection', 'adapter switching', 'camera controls', '375px and 320px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
+  assert.equal(await page.locator('#backup-button').isDisabled(), true, 'backup is disabled after the service stops');
+  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'JSON and filtered CSV exports', 'CSV UTF-8 BOM and formula-injection/quoting protection', 'local backup download, retry, shutdown and mobile visibility', 'adapter switching', 'camera controls', '375px and 320px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
   await browser.close();
   testBrowser = null;
 }
