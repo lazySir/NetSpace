@@ -24,7 +24,7 @@ from monitoring import MonitorController
 from network_store import NetworkStore
 
 
-VERSION = '1.7.0'
+VERSION = '1.8.0'
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
 LOGGER = logging.getLogger('netspace')

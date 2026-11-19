@@ -325,6 +325,11 @@ async function run() {
     const exportPath = path.join(output, 'history-export.json'); await download.saveAs(exportPath);
     const exported = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
     assert.equal(exported.source, 'local-network-history'); assert.equal(exported.historical, true); assert.equal(exported.scanId, 1);
+    const historyCsvPromise = page.waitForEvent('download');
+    await page.locator('#export-csv-button').click();
+    const historyCsv = await historyCsvPromise;
+    await historyCsv.saveAs(path.join(output, 'history-export.csv'));
+    assert.ok(fs.readFileSync(path.join(output, 'history-export.csv'), 'utf8').includes('本地历史快照'), 'CSV should label historical data separately from current discovery');
     live = { ...a, scannedAt: '2026-11-19T02:10:00Z' }; monitor.enabled = true;
     await page.waitForTimeout(3600);
     assert.ok((await page.locator('#device-list').innerText()).includes('HISTORICAL-PC'), 'background completion must not replace replay');
@@ -416,7 +421,7 @@ async function run() {
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'automatic network reselection must not enable a comparison using only the new network latest snapshot');
     assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'automatic network reselection must replace old results with the empty state');
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
   } finally { await browser.close(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

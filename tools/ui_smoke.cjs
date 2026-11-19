@@ -135,6 +135,7 @@ async function run() {
   await page.locator('#device-status-filter').selectOption('cached');
   await page.locator('#device-group-filter').selectOption({ label: '影音设备' });
   assert.equal(await page.locator('#device-list button').count(), 0, 'ignored cached device should stay out of the grouped review queue');
+  assert.equal(await page.locator('#export-csv-button').isDisabled(), true, 'CSV export should be disabled when no devices match');
   await page.locator('#device-search').fill('iPhone');
   assert.equal(await page.locator('#device-list button').count(), 0, 'search should compose with review and status filters');
   await page.locator('#device-search').fill('');
@@ -153,6 +154,42 @@ async function run() {
   assert.equal(await page.locator('#device-list button').count(), 1, 'group filtering should compose with search');
   await page.locator('#device-search').fill('');
   await page.locator('#device-group-filter').selectOption('');
+  await page.locator('#device-group-filter').selectOption({ label: '移动设备' });
+  await page.locator('#device-search').fill('iPhone');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'CSV should use the current combined filters');
+  assert.equal(await page.locator('#export-csv-button').count(), 1, 'device panel should provide a CSV export action');
+  const csvDownloadPromise = page.waitForEvent('download');
+  await page.locator('#export-csv-button').click();
+  const csvDownload = await csvDownloadPromise;
+  await csvDownload.saveAs(path.join(output, 'demo-filtered.csv'));
+  const csvBytes = fs.readFileSync(path.join(output, 'demo-filtered.csv'));
+  assert.equal(csvBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'CSV should include a UTF-8 BOM for Windows spreadsheet compatibility');
+  const csvText = csvBytes.subarray(3).toString('utf8');
+  assert.ok(csvText.includes('虚构演示数据'), 'CSV should identify synthetic demo data');
+  assert.ok(csvText.includes('iPhone'), 'CSV should include the visible filtered device');
+  assert.ok(!csvText.includes('Living Room TV'), 'CSV should exclude devices hidden by filters');
+  const formulaCsv = await page.evaluate(async () => {
+    const { buildDeviceCsv } = await import('/csv.js');
+    return buildDeviceCsv({ scannedAt: '2026-11-20T00:00:00Z', interface: { cidr: '192.168.1.0/24' } }, [{
+      id: 'fixture', ip: '192.168.1.5', mac: ' \t-1+1', hostname: 'Host, "quoted"', kind: 'device', status: 'unverified',
+      profile: { alias: '=HYPERLINK("https://example.invalid")', group: '+SUM(1,2)', notes: '@cmd', known: false, ignored: false }, evidence: ['demo'],
+    }, ...['\0=1', '＝1', '＋1', '－1', '＠cmd'].map((alias, index) => ({
+      id: 'formula-' + index, ip: '192.168.1.' + (10 + index), kind: 'device', status: 'unverified',
+      profile: { alias, known: false, ignored: false }, evidence: ['demo'],
+    }))], { source: '虚构演示数据', exportedAt: '2026-11-20T00:00:00Z' });
+  });
+  assert.ok(formulaCsv.includes("'=HYPERLINK(\"\"https://example.invalid\"\")"), 'CSV should neutralize formula-like aliases and quote embedded quotes');
+  assert.ok(formulaCsv.includes("'+SUM(1,2)"), 'CSV should neutralize formula-like group labels');
+  assert.ok(formulaCsv.includes("'@cmd"), 'CSV should neutralize formula-like notes');
+  assert.ok(formulaCsv.includes("' \t-1+1"), 'CSV should neutralize formula-like values after leading whitespace');
+  assert.ok(formulaCsv.includes("'\0=1"), 'CSV should neutralize formula-like aliases after a leading NUL');
+  for (const trigger of ['＝1', '＋1', '－1', '＠cmd']) {
+    assert.ok(formulaCsv.includes("'" + trigger), 'CSV should neutralize full-width formula trigger ' + trigger[0]);
+  }
+  assert.ok(formulaCsv.includes('Host, ""quoted""'), 'CSV should escape embedded commas and quotes');
+  await page.locator('#device-search').fill('');
+  await page.locator('#device-group-filter').selectOption('');
+  await page.evaluate(() => { document.activeElement.blur(); document.querySelector('#toast').hidden = true; window.scrollTo(0, 0); });
   await page.screenshot({ path: path.join(output, 'netspace-demo.png'), fullPage: true });
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-button').click();
@@ -163,6 +200,11 @@ async function run() {
   await page.locator('#leave-demo').click();
   await page.locator('#demo-banner').waitFor({ state: 'hidden' });
   assert.equal(Number(await page.locator('#stat-total').innerText()), 3);
+  const liveCsvPromise = page.waitForEvent('download');
+  await page.locator('#export-csv-button').click();
+  const liveCsv = await liveCsvPromise;
+  await liveCsv.saveAs(path.join(output, 'live-export.csv'));
+  assert.ok(fs.readFileSync(path.join(output, 'live-export.csv'), 'utf8').includes('本地网络发现'), 'CSV should label current discovery data');
   await page.locator('#device-status-filter').selectOption('cached');
   await page.locator('#device-group-filter').selectOption({ label: '基础设施' });
   await page.locator('#needs-review-filter').check();
@@ -179,10 +221,12 @@ async function run() {
   await page.setViewportSize({ width: 375, height: 900 });
   await page.screenshot({ path: path.join(output, 'netspace-mobile.png'), fullPage: true });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile layout must not overflow horizontally');
+  await page.setViewportSize({ width: 320, height: 800 });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'CSV actions must fit the minimum supported 320px viewport');
   assert.deepEqual(errors, [], 'browser must have no JavaScript runtime errors');
   assert.deepEqual(cspViolations, [], 'browser must report no CSP violations while modules and scene load');
   assert.deepEqual(external, [], 'app must not require any external resources');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'marked export', 'adapter switching', 'camera controls', '375px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'JSON and filtered CSV exports', 'CSV UTF-8 BOM and formula-injection/quoting protection', 'adapter switching', 'camera controls', '375px and 320px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
   await browser.close();
   testBrowser = null;
 }

@@ -1,4 +1,5 @@
 import { createWorkspace } from '/workspace.js';
+import { buildDeviceCsv } from '/csv.js';
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
 const kindNames = { self: '本机', gateway: '默认网关', device: '网络设备' };
@@ -271,6 +272,7 @@ function render() {
   ui['scan-button'].disabled = booting || scanning || stopped || !interfaceId || historical;
   text('scan-button-text', stopped ? '服务已停止' : scanning ? '正在发现…' : '发现设备');
   ui['export-button'].disabled = !result;
+  ui['export-csv-button'].disabled = !result || !visibleDevices.length;
   ui['scan-progress'].hidden = !scanning || demo || historical;
   const progress = realState.progress || {};
   text('progress-message', progress.message || '正在发现设备…');
@@ -332,6 +334,21 @@ ui['export-button'].addEventListener('click', () => {
   const data = { ...result, source: demo ? 'synthetic-demo' : historical ? 'local-network-history' : 'local-network-discovery', historical, exportedAt: new Date().toISOString(), visualization: { layout: 'simulated', physicalPositions: false, links: 'inferred-same-subnet', onlineStatus: 'Address resolution and cache entries do not guarantee that a device is online.' } };
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'netspace-' + (demo ? 'DEMO-' : historical ? 'HISTORY-' : '') + new Date().toISOString().replace(/[:.]/g, '-') + '.json'; document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000); showToast(demo ? '已导出演示数据（含虚构标记）' : historical ? '已导出历史快照（含历史标记）' : '已导出本次发现结果');
+});
+ui['export-csv-button'].addEventListener('click', () => {
+  const result = activeResult(); if (!result) return;
+  const visibleDevices = result.devices.filter(deviceMatches);
+  const historical = !demo && Boolean(workspace?.replayResult);
+  const metadata = {
+    source: demo ? '虚构演示数据' : historical ? '本地历史快照' : '本地网络发现',
+    exportedAt: new Date().toISOString(),
+  };
+  const csv = buildDeviceCsv(result, visibleDevices, metadata);
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  const anchor = document.createElement('a'); anchor.href = url;
+  anchor.download = 'netspace-' + (demo ? 'DEMO-' : historical ? 'HISTORY-' : '') + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
+  document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  showToast('已导出 ' + visibleDevices.length + ' 台可见设备的 CSV 表格');
 });
 ui['shutdown-button'].addEventListener('click', async () => {
   if (stopped) return;

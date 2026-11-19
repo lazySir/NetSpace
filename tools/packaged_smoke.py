@@ -60,7 +60,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.7.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.8.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -81,7 +81,7 @@ def main():
     try:
         wait_start()
         checks.append('bundled runtime without Python on PATH')
-        for resource in ('/', '/app.js', '/workspace.js', '/scene.js', '/style.css',
+        for resource in ('/', '/app.js', '/workspace.js', '/csv.js', '/scene.js', '/style.css',
                          '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js'):
             bundled = request(resource)
             assert len(bundled) > 100, resource
