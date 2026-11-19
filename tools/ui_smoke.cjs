@@ -39,6 +39,18 @@ async function run() {
     await route.fulfill({ status: 202, json: current });
   });
   await page.goto(base, { waitUntil: 'networkidle' });
+  const theme = await page.evaluate(() => ({
+    background: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
+    accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+    browserColor: document.querySelector('meta[name=theme-color]')?.content,
+    metricFont: getComputedStyle(document.querySelector('#stat-cidr')).fontFamily,
+    topologyGrid: getComputedStyle(document.querySelector('.scene-view'), '::before').backgroundImage,
+  }));
+  assert.equal(theme.background, '#050907', 'hacker console uses a near-black background');
+  assert.equal(theme.accent, '#60ff9d', 'hacker console uses a readable green accent');
+  assert.equal(theme.browserColor, '#050907', 'browser chrome matches the console theme');
+  assert.match(theme.metricFont, /Consolas|Cascadia Code/, 'network metrics use a monospace typeface');
+  assert.match(theme.topologyGrid, /linear-gradient/, 'topology includes a terminal grid overlay');
   await page.locator('#stat-total').filter({ hasText: '3' }).waitFor();
   await page.locator('#device-list button').first().click();
   await page.locator('#detail-content').waitFor({ state: 'visible' });

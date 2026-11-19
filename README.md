@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.1.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.2.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -25,7 +25,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 
 下面的画面来自内置演示模式。设备名称、IP、MAC 和拓扑均为虚构数据，不是任何真实局域网的扫描结果。
 
-![NetSpace 虚构网络演示：暗色终端风格的 3D 局域网拓扑界面](docs/images/netspace-demo.png)
+![NetSpace 虚构网络演示：黑绿终端风格的 3D 局域网拓扑界面](docs/images/netspace-demo.png)
 
 ## 能做什么
 
@@ -165,3 +165,13 @@ Windows adapters / neighbor cache / native address resolution
 项目内置 Three.js 0.187.0 和 OrbitControls，相关许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 `web/vendor/THREE-LICENSE.txt`。Python 打包运行时的许可说明随 Windows 分发包提供。
 
 本仓库暂未指定项目自身的开源许可证。公开可见源码不代表自动授予复制、修改或分发许可；如需复用，请先联系作者确认。
+
+## 迭代记录
+
+### 1.2.0 — 黑客终端界面（2026-11-20）
+
+- 将主界面配色改为黑底荧绿，统一按钮、状态、焦点和网络节点颜色。
+- 为 3D 视图区加入低对比网格扫描层，网络地址和指标使用等宽字体；保留减少动态效果与窄屏布局。
+- 更新 README 演示截图，截图仅包含程序生成的虚构设备。
+- **验证**：Python 单元测试、Chromium 桌面/375px 界面检查通过；没有运行时错误或外部资源请求。
+- **安全审查**：本轮未发现新漏洞；完整安全强化计划在后续迭代记录中单列。

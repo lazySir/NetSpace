@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from '/vendor/OrbitControls.js';
 
-const COLORS = { gateway: 0x58d9e9, self: 0x9cf4cb, device: 0x65bff1 };
+const COLORS = { gateway: 0x63ff9e, self: 0xd9ff80, device: 0x47c977 };
 const TAU = Math.PI * 2;
 
 function getSatellitePosition(index, count) {
@@ -39,14 +39,14 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'low-power' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
-  renderer.setClearColor(0x071019, 0);
+  renderer.setClearColor(0x050907, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.domElement.setAttribute('aria-label', '模拟网络关系空间；可拖动旋转、滚轮缩放，或在设备列表中选择设备');
   renderer.domElement.setAttribute('role', 'img');
   container.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x071019, 0.026);
+  scene.fog = new THREE.FogExp2(0x050907, 0.026);
   const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 110);
   const home = new THREE.Vector3(12.5, 10.5, 15.5);
   camera.position.copy(home);
@@ -68,7 +68,7 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
   const linkGroup = new THREE.Group();
   scene.add(atmosphere, linkGroup, nodeGroup);
 
-  const grid = new THREE.GridHelper(66, 44, 0x164553, 0x102c38);
+  const grid = new THREE.GridHelper(66, 44, 0x23683b, 0x123321);
   grid.material.transparent = true;
   grid.material.opacity = 0.5;
   atmosphere.add(grid);
@@ -86,7 +86,7 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
   }
 
   [3.3, 6.2, 9.5, 13.2].forEach((radius, i) => {
-    atmosphere.add(lineRing(radius, 0x236879, 0.23 - i * 0.025));
+    atmosphere.add(lineRing(radius, 0x287344, 0.23 - i * 0.025));
   });
 
   // Short ticks give the floor a calibrated visual rhythm without implying distance.
@@ -100,7 +100,7 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
   }
   atmosphere.add(new THREE.LineSegments(
     new THREE.BufferGeometry().setFromPoints(tickPoints),
-    new THREE.LineBasicMaterial({ color: 0x3b7a87, transparent: true, opacity: 0.3 })
+    new THREE.LineBasicMaterial({ color: 0x55a96a, transparent: true, opacity: 0.3 })
   ));
 
   const starPositions = new Float32Array(105 * 3);
@@ -113,7 +113,7 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
   }
   const starsGeometry = new THREE.BufferGeometry();
   starsGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-  atmosphere.add(new THREE.Points(starsGeometry, new THREE.PointsMaterial({ color: 0x78c4d4, size: 0.035, transparent: true, opacity: 0.4, depthWrite: false })));
+  atmosphere.add(new THREE.Points(starsGeometry, new THREE.PointsMaterial({ color: 0x75d88f, size: 0.035, transparent: true, opacity: 0.4, depthWrite: false })));
 
   const glowCanvas = document.createElement('canvas');
   glowCanvas.width = glowCanvas.height = 128;
@@ -270,7 +270,7 @@ export function createNetworkScene({ container, labels, onSelect = () => {} }) {
       const midpoint = start.clone().lerp(end, 0.5);
       midpoint.y += Math.min(start.distanceTo(end) * 0.12, 1.1);
       const curve = new THREE.QuadraticBezierCurve3(start, midpoint, end);
-      const material = new THREE.LineDashedMaterial({ color: 0x347d91, transparent: true, opacity: 0.45, dashSize: 0.12, gapSize: 0.1, depthWrite: false });
+      const material = new THREE.LineDashedMaterial({ color: 0x318c50, transparent: true, opacity: 0.48, dashSize: 0.12, gapSize: 0.1, depthWrite: false });
       const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(55)), material);
       line.computeLineDistances();
       line.userData.source = String(link.source);
