@@ -9,6 +9,7 @@ export function createWorkspace(options) {
   let replay = null, replayRequest = 0, networkId = '', pinnedNetwork = false, tab = 'devices';
   let networks = [], scans = [], events = [], records = [];
   let unreadCount = 0, archiveError = '', monitorError = '', loadingReplay = false;
+  let desktopNotificationsBusy = false;
   let networkSignature = '', historySignature = '', eventSignature = '', liveSignature = '';
   const drafts = new Map(), notifiedEvents = new Set();
   let profileKey = '';
@@ -49,6 +50,22 @@ export function createWorkspace(options) {
     ui['mute-toggle'].disabled = locked;
     ui['mute-toggle'].setAttribute('aria-pressed', String(!monitor.notificationsEnabled));
     ui['mute-toggle'].textContent = monitor.notificationsEnabled ? '提醒已开启' : '提醒已静音';
+    const notificationApi = typeof window.Notification === 'function' ? window.Notification : null;
+    const permission = notificationApi?.permission || 'unsupported';
+    const canRequestPermission = permission === 'default' && typeof notificationApi?.requestPermission === 'function';
+    ui['desktop-notifications-toggle'].disabled = locked || desktopNotificationsBusy || !canRequestPermission;
+    ui['desktop-notifications-toggle'].textContent = desktopNotificationsBusy ? '正在请求权限…'
+      : permission === 'granted' ? '桌面提醒已开启'
+        : permission === 'denied' ? '系统已阻止桌面提醒'
+          : permission === 'unsupported' ? '当前环境不支持' : '启用桌面提醒';
+    const desktopStatus = permission === 'granted'
+      ? '桌面提醒已获授权；浏览器页面保持打开时，新设备可显示为 Windows 通知。'
+      : permission === 'denied'
+        ? '系统已阻止桌面提醒；可在浏览器的网站权限中重新开启，页面内提醒仍可使用。'
+        : permission === 'unsupported'
+          ? '当前浏览器不支持桌面提醒；页面内提醒仍可使用。'
+          : '需要你点击启用后才会请求系统权限；通知只提示新设备数量，不显示名称或地址。';
+    ui['desktop-notifications-status'].textContent = desktopStatus;
     ui['monitor-status'].textContent = options.isStopped() ? '已停止' : !ready ? '正在读取设置' : monitor.enabled ? '运行中 · 每 ' + (monitor.intervalSeconds / 60) + ' 分钟' : '尚未开启';
     ui['monitor-dot'].style.background = !options.isStopped() && monitor.enabled ? 'var(--mint)' : '#668195';
     ui['monitor-next'].textContent = '下一次：' + (!options.isStopped() && monitor.enabled && monitor.nextScanAt ? stamp(monitor.nextScanAt) : '—');
@@ -130,8 +147,21 @@ export function createWorkspace(options) {
     if (readonly() || busy || !monitor.notificationsEnabled) return;
     const fresh = events.filter(event => event.kind === 'new' && event.notify && !event.read && !notifiedEvents.has(event.id));
     if (!fresh.length) return;
+    let delivered = false;
+    if (typeof window.Notification === 'function' && window.Notification.permission === 'granted') {
+      try {
+        const notification = new window.Notification('NetSpace · 网络变化', {
+          body: '发现 ' + fresh.length + ' 台新设备。打开应用查看变化记录。',
+          tag: 'netspace-new-devices',
+        });
+        notification.onclick = () => { window.focus(); notification.close?.(); };
+        delivered = true;
+      } catch {
+        delivered = false;
+      }
+    }
     for (const event of fresh) notifiedEvents.add(event.id);
-    showToast('发现 ' + fresh.length + ' 台新设备，请查看“变化”记录。');
+    if (!delivered) showToast('发现 ' + fresh.length + ' 台新设备，请查看“变化”记录。');
   }
   async function loadNetworkRecords() {
     const expected = networkId;
@@ -183,6 +213,23 @@ export function createWorkspace(options) {
   ui['monitor-toggle'].addEventListener('click', () => updateMonitor(monitor.enabled ? { enabled: false } : { enabled: true, interfaceId: options.getInterfaceId(), intervalSeconds: Number(ui['monitor-interval'].value) }));
   ui['monitor-interval'].addEventListener('change', () => updateMonitor({ intervalSeconds: Number(ui['monitor-interval'].value) }));
   ui['mute-toggle'].addEventListener('click', () => updateMonitor({ notificationsEnabled: !monitor.notificationsEnabled }));
+  ui['desktop-notifications-toggle'].addEventListener('click', async () => {
+    if (readonly() || !ready || busy || desktopNotificationsBusy) return;
+    const notificationApi = typeof window.Notification === 'function' ? window.Notification : null;
+    if (!notificationApi || typeof notificationApi.requestPermission !== 'function') {
+      showToast('当前浏览器不支持桌面提醒，可继续使用页面内提醒。');
+      return;
+    }
+    if (notificationApi.permission !== 'default') return;
+    desktopNotificationsBusy = true; rerender();
+    try {
+      const permission = await notificationApi.requestPermission();
+      showToast(permission === 'granted' ? '桌面提醒已开启，可随时使用静音按钮暂停提醒。'
+        : '未获桌面提醒权限；页面内提醒仍可使用。');
+    } catch {
+      showToast('未能启用桌面提醒；页面内提醒仍可使用。');
+    } finally { desktopNotificationsBusy = false; rerender(); }
+  });
   ui['network-filter'].addEventListener('change', () => {
     networkId = ui['network-filter'].value; pinnedNetwork = true; replayRequest++; replay = null; loadingReplay = false;
     scans = []; events = []; records = []; unreadCount = 0; archiveError = ''; rerender(); loadNetworkRecords();

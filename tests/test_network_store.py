@@ -1,5 +1,6 @@
 import copy
 import importlib
+import math
 import os
 import sqlite3
 import tempfile
@@ -361,6 +362,17 @@ class NetworkStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_settings(), {'notificationsEnabled': False})
         self.store.set_settings({})
         self.assertEqual(self.store.get_settings(), {'notificationsEnabled': False})
+
+    def test_nonfinite_scan_duration_is_rejected_before_persistence(self):
+        for duration in (math.nan, math.inf, -math.inf):
+            with self.subTest(duration=duration):
+                invalid = scan(peer())
+                invalid['durationMs'] = duration
+                with self.assertRaises(ValueError):
+                    self.store.record_scan(invalid)
+                self.assertEqual(self.store.list_scans(), [])
+                self.assertEqual(self.store.list_networks(), [])
+                self.assertEqual(self.store.list_events(), [])
 
     def test_profile_edits_do_not_rewrite_historical_snapshots(self):
         first = self.store.record_scan(scan(peer()))

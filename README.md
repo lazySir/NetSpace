@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.4.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.5.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -38,12 +38,14 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 06  EXPORT     导出当前结果、历史快照或演示数据为 JSON
 07  DEMO       用虚构设备体验界面，不访问真实扫描数据
 08  REVIEW     筛出尚未确认且未忽略的设备，并同步聚焦 3D 节点
+09  ALERT      可选 Windows 桌面提醒；通知只显示新设备数量
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
 - 历史回放、演示数据和当前发现相互隔离。
 - Three.js 和页面资源随项目提供，界面可以离线加载。
 - SQLite 设备档案和历史数据在应用重启后保留。
+- 可选桌面提醒需在界面中手动授权；无权限或不支持时继续使用页面内提醒。桌面提醒只在 NetSpace 页面打开期间运行，且不显示设备名称、IP 或 MAC。
 
 ## Windows 使用
 
@@ -133,7 +135,7 @@ Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：79 项 Python 测试通过；Windows 可执行文件、待复核设备队列、档案更新、故障恢复与界面升级验证通过。详细记录见 [`docs/verification-1.4.0-2026-11-20.md`](docs/verification-1.4.0-2026-11-20.md)。
+**当前验证记录**：81 项 Python 测试通过；Windows 可执行文件、桌面通知权限与隐私、拒绝权限后的页面内降级、扫描失败恢复和待复核设备队列验证通过。详细记录见 [`docs/verification-1.5.0-2026-11-20.md`](docs/verification-1.5.0-2026-11-20.md)。
 
 ## 架构速览
 
@@ -156,7 +158,6 @@ Windows adapters / neighbor cache / native address resolution
 
 ## 路线图
 
-- 可选的 Windows 系统通知。
 - 更好的 MAC 随机化和设备身份合并处理。
 - 可插拔发现适配器、拓扑过滤与时间轴。
 - 远程只读查看（如实现，将默认关闭并加入显式访问控制）。
@@ -198,3 +199,10 @@ Windows adapters / neighbor cache / native address resolution
 - 筛选与发现状态、名称/IP/MAC 搜索联动；设备数、可见节点和 3D 拓扑同步更新。保存设备档案为“已认识”或“忽略提醒”后，该设备退出复核队列。
 - 切换网卡、演示数据或历史快照时清除筛选；演示中预先安排了已认识、已忽略和待复核样例，方便查看功能。
 - **验证**：79 项 Python 测试通过；Chromium 主流程、网络恢复与档案/历史升级检查通过，覆盖筛选组合、设备标记已认识后退出队列、重置行为、3D 联动、无 CSP 违规及移动布局；Windows 单文件重建、原生发现和重启后数据持久化验证通过。详见 [`docs/verification-1.4.0-2026-11-20.md`](docs/verification-1.4.0-2026-11-20.md)。
+
+### 1.5.0 — Windows 桌面提醒与扫描恢复（2026-11-20）
+
+- 新增可选桌面通知，必须由用户点击启用后才申请系统权限；页面打开且获得授权时，新设备事件可显示 Windows 桌面提醒。
+- 通知内容仅包含新设备数量，不包含名称、IP 或 MAC；不支持或拒绝权限时继续使用页面内提醒，现有静音设置保持生效。演示数据、历史回放和忽略的设备不会触发新设备通知。
+- 扫描线程启动失败时明确进入错误状态，修复后允许再次发现；扫描记录验证拒绝 NaN 与无穷大耗时，避免异常数据造成存储事务失败。
+- **验证**：Python 81 项测试通过；Chromium 覆盖未自动请求权限、点击授权、拒绝权限降级、隐私内容和重复提醒抑制；桌面及 375 px 窄屏布局、无 CSP 违规和无外部请求检查通过。Windows 单文件构建与打包运行检查通过。详见 [`docs/verification-1.5.0-2026-11-20.md`](docs/verification-1.5.0-2026-11-20.md)。

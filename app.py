@@ -24,7 +24,7 @@ from monitoring import MonitorController
 from network_store import NetworkStore
 
 
-VERSION = '1.4.0'
+VERSION = '1.5.0'
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
 LOGGER = logging.getLogger('netspace')
@@ -153,7 +153,13 @@ class ScanState:
             self.error = None
             self.progress = {'phase': 'discovering', 'completed': 0, 'total': 0, 'message': '正在读取当前网络'}
             thread = threading.Thread(target=self._scan, args=(interface_id,), daemon=True, name='netspace-scan')
-            thread.start()
+            try:
+                thread.start()
+            except Exception as error:
+                self.status = 'error'
+                self.error = str(error) or '无法启动设备发现任务，请稍后重试'
+                self.progress = {'phase': 'error', 'completed': 0, 'total': 0, 'message': self.error}
+                raise
         return True
 
     def _progress(self, progress):

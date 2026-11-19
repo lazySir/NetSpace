@@ -10,6 +10,7 @@ import unittest
 import urllib.error
 import urllib.request
 from concurrent.futures import CancelledError
+from unittest import mock
 
 
 class LocalServerTests(unittest.TestCase):
@@ -82,6 +83,18 @@ class LocalServerTests(unittest.TestCase):
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 202)
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 409)
         self.assertEqual(len(self.calls), 1)
+
+    def test_worker_start_failure_does_not_leave_scan_stuck(self):
+        with mock.patch.object(threading.Thread, 'start', side_effect=RuntimeError('thread limit')):
+            with self.assertRaisesRegex(RuntimeError, 'thread limit'):
+                self.server.state.start_scan('7')
+        self.assertEqual(self.server.state.snapshot()['status'], 'error')
+        self.assertIn('thread limit', self.server.state.snapshot()['error'])
+        self.assertTrue(self.server.state.start_scan('7'))
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and self.server.state.snapshot()['status'] == 'scanning':
+            time.sleep(.02)
+        self.assertEqual(self.server.state.snapshot()['status'], 'complete')
 
     def test_arbitrary_network_target_is_rejected(self):
         self.assertEqual(self.request('/api/scan', {'interfaceId': '8.8.8.8'})[0], 400)

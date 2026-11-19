@@ -22,6 +22,25 @@ async function run() {
   const browser = await chromium.launch({ executablePath: process.env.NETSPACE_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
   try {
     const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce', acceptDownloads: true });
+    await context.addInitScript(() => {
+      let permission = 'default';
+      window.desktopNotifications = [];
+      window.notificationPermissionRequests = 0;
+      window.setNotificationPermission = value => { permission = value; };
+      window.Notification = class {
+        static get permission() { return permission; }
+        static requestPermission() {
+          window.notificationPermissionRequests++;
+          permission = window.notificationPermissionOutcome || 'granted';
+          return Promise.resolve(permission);
+        }
+        constructor(title, options = {}) {
+          if (permission !== 'granted') throw new Error('notifications are not permitted');
+          window.desktopNotifications.push({ title, body: options.body || '', tag: options.tag || '' });
+          this.close = () => {};
+        }
+      };
+    });
     const page = await context.newPage();
     const errors = [], external = [], posts = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -72,6 +91,9 @@ async function run() {
       return route.fulfill({ json });
     });
     await page.goto(base, { waitUntil: 'networkidle' });
+    assert.equal(await page.evaluate(() => window.notificationPermissionRequests), 0, 'page load must not request desktop notification permission');
+    await page.locator('#desktop-notifications-toggle').waitFor();
+    assert.equal(await page.locator('#desktop-notifications-toggle').innerText(), '启用桌面提醒');
     await page.locator('#needs-review-filter').check();
     assert.equal(await page.locator('#device-list button').count(), 1, 'review queue should contain the unreviewed gateway while excluding the local computer');
     await page.locator('#needs-review-filter').uncheck();
@@ -114,7 +136,7 @@ async function run() {
     assert.equal(posts.filter(post => post.path === '/api/profile').at(-1).body.alias, 'saved alias', 'a later field edit must preserve a profile saved before a stale response');
     await page.evaluate(() => {
       window.newDeviceToasts = 0;
-      new MutationObserver(() => { if (document.querySelector('#toast').textContent.includes('台新设备')) window.newDeviceToasts++; }).observe(document.querySelector('#toast'), { childList: true, subtree: true });
+      new MutationObserver(() => { if (document.querySelector('#toast').textContent.includes('台新设备')) window.newDeviceToasts++; }).observe(document.querySelector('#toast'), { childList: true, subtree: true, characterData: true });
     });
     await page.locator('#profile-alias').fill('未保存的草稿');
     await page.locator('#monitor-interval').selectOption('60');
@@ -207,6 +229,35 @@ async function run() {
     await page.locator('#return-current').click();
     await page.locator('#replay-banner').waitFor({ state: 'hidden' });
     assert.ok((await page.locator('#device-list').innerText()).includes('WORKSTATION'));
+    await page.evaluate(() => { window.notificationPermissionOutcome = 'denied'; });
+    await page.locator('#desktop-notifications-toggle').click();
+    await page.waitForFunction(() => document.querySelector('#desktop-notifications-toggle').textContent.includes('系统已阻止'));
+    assert.equal(await page.evaluate(() => window.notificationPermissionRequests), 1, 'denied permission must be requested only after a click');
+    await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('未获桌面提醒权限'));
+    await page.evaluate(() => {
+      window.setNotificationPermission('default');
+      window.notificationPermissionOutcome = 'granted';
+    });
+    await page.waitForFunction(() => !document.querySelector('#desktop-notifications-toggle').disabled, null, { timeout: 5000 });
+    await page.locator('#desktop-notifications-toggle').click();
+    await page.waitForFunction(() => document.querySelector('#desktop-notifications-toggle').textContent.includes('已开启'));
+    assert.equal(await page.evaluate(() => window.notificationPermissionRequests), 2, 'permission must be requested only after an explicit click');
+    events.unshift({ ...events[0], id: 1001, networkId: 'network-A', read: false, notify: true, name: '<script>私人设备</script>', ip: '192.168.50.222' });
+    await page.waitForFunction(() => window.desktopNotifications.length === 1, null, { timeout: 5000 });
+    const notification = await page.evaluate(() => window.desktopNotifications[0]);
+    assert.equal(notification.title, 'NetSpace · 网络变化');
+    assert.equal(notification.body, '发现 1 台新设备。打开应用查看变化记录。');
+    assert.equal(notification.tag, 'netspace-new-devices');
+    assert.equal(JSON.stringify(notification).includes('192.168.50.222'), false, 'desktop notification must not expose device IP');
+    assert.equal(JSON.stringify(notification).includes('私人设备'), false, 'desktop notification must not expose device names');
+    await page.waitForTimeout(3300);
+    assert.equal(await page.evaluate(() => window.desktopNotifications.length), 1, 'polling must not repeat a desktop notification for the same event');
+    const fallbackCount = await page.evaluate(() => window.newDeviceToasts);
+    await page.evaluate(() => window.setNotificationPermission('denied'));
+    await page.waitForFunction(() => document.querySelector('#desktop-notifications-toggle').textContent.includes('系统已阻止'));
+    events.unshift({ ...events[0], id: 1002, networkId: 'network-A', read: false, notify: true, name: '安全测试设备', ip: '192.168.50.223' });
+    await page.waitForFunction(count => window.newDeviceToasts > count, fallbackCount, { timeout: 10000 });
+    assert.equal(await page.evaluate(() => window.desktopNotifications.length), 1, 'denied permission must fall back to the in-page toast');
     await page.locator('#demo-toggle').click();
     await page.locator('#demo-banner').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#profile-save').isDisabled(), true); assert.equal(await page.locator('#monitor-toggle').isDisabled(), true);
@@ -246,7 +297,7 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#monitor-status').textContent.includes('尚未开启'));
     assert.deepEqual(posts.filter(post => post.path === '/api/monitor').at(-1).body, { enabled: false }, 'stopping must not submit an unavailable interface');
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'events/read/unread', 'history network isolation', 'historical export', 'demo/replay isolation', '375px and keyboard'], screenshots: output }));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history network isolation', 'historical export', 'demo/replay isolation', '375px and keyboard'], screenshots: output }));
   } finally { await browser.close(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

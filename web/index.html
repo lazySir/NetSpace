@@ -55,8 +55,9 @@
       <div class="replay-banner" id="replay-banner" hidden><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p><strong>正在回看历史快照</strong><span id="replay-description"></span></p><button id="return-current" class="text-button">返回当前网络 →</button></div>
       <section class="monitor-toolbar" aria-label="定时发现与提醒">
         <div class="monitor-title"><span class="status-dot" id="monitor-dot"></span><strong>定时发现</strong><span id="monitor-status">尚未开启</span></div>
-        <div class="monitor-controls"><label class="sr-only" for="monitor-interval">定时发现间隔</label><select id="monitor-interval"><option value="60">每 1 分钟</option><option value="300" selected>每 5 分钟</option><option value="600">每 10 分钟</option></select><button id="monitor-toggle" class="compact-button" disabled>开始定时</button><span id="monitor-next">下一次：—</span><button id="mute-toggle" class="compact-button quiet-button" aria-pressed="false" title="静音后仍记录网络变化" disabled>提醒已开启</button></div>
+        <div class="monitor-controls"><label class="sr-only" for="monitor-interval">定时发现间隔</label><select id="monitor-interval"><option value="60">每 1 分钟</option><option value="300" selected>每 5 分钟</option><option value="600">每 10 分钟</option></select><button id="monitor-toggle" class="compact-button" disabled>开始定时</button><span id="monitor-next">下一次：—</span><button id="mute-toggle" class="compact-button quiet-button" aria-pressed="false" title="静音后仍记录网络变化" disabled>提醒已开启</button><button id="desktop-notifications-toggle" class="compact-button quiet-button" type="button" title="授权后，Windows 桌面可显示不含设备身份信息的新设备提醒" disabled>启用桌面提醒</button></div>
         <p id="monitor-message" class="monitor-message" role="status" hidden></p>
+        <p id="desktop-notifications-status" class="monitor-message desktop-notifications-status" role="status">桌面提醒仅在应用页面打开时运行；通知内容不会包含设备名称或地址。</p>
       </section>
       <div class="notice" id="notice" role="status" hidden></div>
 

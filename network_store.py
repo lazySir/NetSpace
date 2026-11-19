@@ -10,6 +10,7 @@ import datetime
 import hashlib
 import ipaddress
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -225,7 +226,8 @@ class NetworkStore:
             scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
             enriched['scannedAt'] = scanned_at
         duration = enriched.get('durationMs', 0)
-        if type(duration) not in (int, float) or duration < 0:
+        if (type(duration) not in (int, float) or duration < 0 or
+                type(duration) is float and not math.isfinite(duration)):
             raise ValueError('扫描耗时格式不正确。')
         identity = _network_identity(enriched)
         label = str(enriched['interface'].get('alias') or identity[0] or '本地网络')
