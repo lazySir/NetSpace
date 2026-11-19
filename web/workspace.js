@@ -7,12 +7,19 @@ export function createWorkspace(options) {
   let monitor = { enabled: false, interfaceId: null, intervalSeconds: 300, nextScanAt: null, error: null, notificationsEnabled: true };
   let ready = false, busy = false, destroyed = false, refreshing = false, timer = null, settingsGeneration = 0;
   let replay = null, replayRequest = 0, networkId = '', pinnedNetwork = false, tab = 'devices';
+  let comparisonSourceId = '', comparisonTargetId = '', comparisonResult = null, comparisonError = '', comparisonLoading = false, comparisonRequest = 0;
+  let wasDemo = false;
   let networks = [], scans = [], events = [], records = [];
   let unreadCount = 0, archiveError = '', monitorError = '', loadingReplay = false;
   let desktopNotificationsBusy = false;
   let networkSignature = '', historySignature = '', eventSignature = '', liveSignature = '';
   const drafts = new Map(), notifiedEvents = new Set();
   let profileKey = '';
+
+  function resetComparison(clearSelection = true) {
+    comparisonRequest++; comparisonResult = null; comparisonError = ''; comparisonLoading = false;
+    if (clearSelection) { comparisonSourceId = ''; comparisonTargetId = ''; }
+  }
 
   function readonly() { return options.isDemo() || Boolean(replay) || options.isStopped(); }
   function stamp(value) {
@@ -83,6 +90,10 @@ export function createWorkspace(options) {
     ui['network-filter'].disabled = !networks.length || options.isStopped();
   }
   function renderHistory() {
+    const inDemo = options.isDemo();
+    if (inDemo && !wasDemo) resetComparison(false);
+    wasDemo = inDemo;
+    ui['history-comparison-section'].hidden = inDemo;
     const signature = JSON.stringify([networkId, scans]);
     if (signature !== historySignature) {
       historySignature = signature; ui['history-scan'].replaceChildren();
@@ -92,12 +103,87 @@ export function createWorkspace(options) {
         option.textContent = stamp(scan.scannedAt) + ' · ' + scan.deviceCount + ' 台 · ' + Number(scan.changeCount || 0) + ' 项变化';
         ui['history-scan'].append(option);
       }
+      for (const [id, prompt] of [['history-compare-source', '选择起始快照'], ['history-compare-target', '选择对比快照']]) {
+        const select = ui[id], previous = id === 'history-compare-source' ? comparisonSourceId : comparisonTargetId;
+        select.replaceChildren();
+        const choice = document.createElement('option'); choice.value = ''; choice.textContent = prompt; select.append(choice);
+        for (const scan of scans) {
+          const option = document.createElement('option'); option.value = String(scan.id);
+          option.textContent = stamp(scan.scannedAt) + ' · ' + scan.deviceCount + ' 台'; select.append(option);
+        }
+        const validPrevious = scans.some(scan => String(scan.id) === previous);
+        const fallback = id === 'history-compare-source' ? (scans.length > 1 ? String(scans[1].id) : '') : (scans.length ? String(scans[0].id) : '');
+        if (id === 'history-compare-source') comparisonSourceId = validPrevious ? previous : fallback;
+        else comparisonTargetId = validPrevious ? previous : fallback;
+        select.value = id === 'history-compare-source' ? comparisonSourceId : comparisonTargetId;
+      }
     }
     ui['history-scan'].disabled = !scans.length || options.isStopped() || loadingReplay || options.isDemo();
     ui['history-scan'].value = replay && replay.networkId === networkId ? String(replay.scanId) : '';
+    const compareLocked = !scans.length || options.isStopped() || options.isDemo() || comparisonLoading;
+    ui['history-compare-source'].disabled = compareLocked; ui['history-compare-target'].disabled = compareLocked;
+    ui['history-compare-button'].disabled = compareLocked || !comparisonSourceId || !comparisonTargetId || comparisonSourceId === comparisonTargetId;
+    renderComparison();
     ui['replay-banner'].hidden = !replay || options.isDemo();
     ui['replay-description'].textContent = replay ? stamp(replay.scannedAt) + ' · ' + (replay.interface?.cidr || '') + ' · 仅供查看' : '';
     message(ui['archive-message'], loadingReplay ? '正在读取历史快照…' : archiveError);
+  }
+  function renderComparison() {
+    const list = ui['history-comparison-list'], status = ui['history-comparison-status'];
+    list.replaceChildren();
+    if (comparisonLoading) { status.textContent = '正在读取两次本地快照…'; return; }
+    if (comparisonError) { status.textContent = comparisonError; return; }
+    if (!comparisonResult) { status.textContent = '选择两次同一网络的发现记录，查看设备变化。'; return; }
+    const { added, missing, changed, unchanged, source, target } = comparisonResult;
+    status.textContent = stamp(source.scannedAt) + ' → ' + stamp(target.scannedAt) + ' · 新增 ' + added.length + ' · IP 变化 ' + changed.length + ' · 本次未见 ' + missing.length + ' · 未变化 ' + unchanged;
+    const entries = [
+      ...added.map(device => ({ kind: 'added', label: '新增', device, address: device.ip || '未知地址' })),
+      ...changed.map(item => ({ kind: 'ip-changed', label: 'IP 变化', device: item.after, address: (item.before.ip || '未知地址') + ' → ' + (item.after.ip || '未知地址') })),
+      ...missing.map(device => ({ kind: 'missing', label: '本次未见', device, address: device.ip || '未知地址' })),
+    ];
+    for (const entry of entries) {
+      const row = document.createElement('li'); row.dataset.changeKind = entry.kind;
+      const label = document.createElement('span'); label.className = 'comparison-kind'; label.textContent = entry.label;
+      const name = document.createElement('span'); name.className = 'comparison-device'; name.textContent = entry.device.profile?.alias || entry.device.hostname || '网络设备';
+      const address = document.createElement('span'); address.className = 'comparison-address mono'; address.textContent = entry.address;
+      row.append(label, name, address); list.append(row);
+    }
+    if (!entries.length) { const empty = document.createElement('li'); empty.className = 'comparison-no-change'; empty.textContent = '两次快照中的设备身份与 IP 地址没有可见变化。'; list.append(empty); }
+  }
+  function deviceIdentity(device) {
+    if (typeof device.deviceKey === 'string' && device.deviceKey) return 'key:' + device.deviceKey;
+    const mac = typeof device.mac === 'string' ? device.mac.replace(/[^a-f0-9]/gi, '').toLowerCase() : '';
+    return mac ? 'mac:' + mac : 'ip:' + String(device.id || device.ip || '');
+  }
+  async function compareHistory() {
+    if (options.isDemo() || options.isStopped() || !networkId) return;
+    const sourceId = comparisonSourceId, targetId = comparisonTargetId, expectedNetwork = networkId;
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const request = ++comparisonRequest; comparisonLoading = true; comparisonError = ''; comparisonResult = null; rerender();
+    try {
+      const [sourceData, targetData] = await Promise.all([
+        api('/api/history/' + encodeURIComponent(sourceId)), api('/api/history/' + encodeURIComponent(targetId)),
+      ]);
+      if (request !== comparisonRequest || destroyed || options.isDemo() || networkId !== expectedNetwork
+        || comparisonSourceId !== sourceId || comparisonTargetId !== targetId) return;
+      for (const [id, data] of [[sourceId, sourceData], [targetId, targetData]]) {
+        if (!data.result || !Array.isArray(data.result.devices) || data.result.networkId !== expectedNetwork || String(data.result.scanId) !== id) {
+          throw new Error('快照不属于当前网络或记录已变化，请重新选择。');
+        }
+      }
+      const before = new Map(sourceData.result.devices.map(device => [deviceIdentity(device), device]));
+      const after = new Map(targetData.result.devices.map(device => [deviceIdentity(device), device]));
+      const added = [], missing = [], changed = []; let unchanged = 0;
+      for (const [identity, device] of after) {
+        const previous = before.get(identity);
+        if (!previous) added.push(device);
+        else if (previous.ip !== device.ip) changed.push({ before: previous, after: device });
+        else unchanged++;
+      }
+      for (const [identity, device] of before) if (!after.has(identity)) missing.push(device);
+      comparisonResult = { source: sourceData.result, target: targetData.result, added, missing, changed, unchanged };
+    } catch (error) { if (request === comparisonRequest) comparisonError = '无法比较：' + error.message; }
+    finally { if (request === comparisonRequest && !destroyed) { comparisonLoading = false; rerender(); } }
   }
   function renderEvents() {
     ui['unread-count'].textContent = String(unreadCount);
@@ -194,8 +280,11 @@ export function createWorkspace(options) {
       if (catalogue.status === 'fulfilled') networks = Array.isArray(catalogue.value.networks) ? catalogue.value.networks : [];
       else archiveError = catalogue.reason.message;
       const liveId = options.getLiveResult()?.networkId;
-      if (!pinnedNetwork && liveId && networks.some(item => item.id === liveId)) networkId = liveId;
-      else if (!networks.some(item => item.id === networkId)) networkId = networks[0]?.id || '';
+      const nextNetworkId = !pinnedNetwork && liveId && networks.some(item => item.id === liveId)
+        ? liveId : networks.some(item => item.id === networkId) ? networkId : networks[0]?.id || '';
+      if (nextNetworkId !== networkId) {
+        networkId = nextNetworkId; resetComparison(); scans = []; events = []; records = []; unreadCount = 0; archiveError = '';
+      }
       rerender();
       if (ready && (readLive || monitor.enabled) && options.readState().status !== 'scanning') {
         try { options.applyState(await api('/api/state')); } catch (error) { monitorError = '定时发现状态暂时无法读取：' + error.message; }
@@ -232,8 +321,16 @@ export function createWorkspace(options) {
   });
   ui['network-filter'].addEventListener('change', () => {
     networkId = ui['network-filter'].value; pinnedNetwork = true; replayRequest++; replay = null; loadingReplay = false;
+    resetComparison();
     scans = []; events = []; records = []; unreadCount = 0; archiveError = ''; rerender(); loadNetworkRecords();
   });
+  for (const id of ['history-compare-source', 'history-compare-target']) ui[id].addEventListener('change', () => {
+    comparisonRequest++; comparisonLoading = false;
+    if (id === 'history-compare-source') comparisonSourceId = ui[id].value; else comparisonTargetId = ui[id].value;
+    comparisonResult = null; comparisonError = ''; renderComparison();
+    ui['history-compare-button'].disabled = options.isStopped() || options.isDemo() || comparisonLoading || !comparisonSourceId || !comparisonTargetId || comparisonSourceId === comparisonTargetId;
+  });
+  ui['history-compare-button'].addEventListener('click', compareHistory);
   ui['history-scan'].addEventListener('change', async () => {
     const id = ui['history-scan'].value;
     if (!id || options.isDemo() || options.isStopped()) return;
@@ -284,6 +381,6 @@ export function createWorkspace(options) {
       const signature = JSON.stringify([state.result?.networkId, state.result?.scanId, state.result?.scannedAt]);
       if (signature !== liveSignature) { liveSignature = signature; if (ready && !refreshing) { clearTimeout(timer); timer = setTimeout(refresh, 250); } }
     },
-    destroy() { destroyed = true; clearTimeout(timer); replayRequest++; },
+    destroy() { destroyed = true; clearTimeout(timer); replayRequest++; resetComparison(); },
   };
 }

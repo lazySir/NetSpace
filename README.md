@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.6.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.7.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -27,6 +27,10 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 
 ![NetSpace 虚构网络演示：黑绿终端风格的 3D 局域网拓扑界面](docs/images/netspace-demo.png)
 
+历史差异画面使用自动化测试生成的虚构设备与地址，仅演示同一网络的两次本地快照比较。
+
+![NetSpace 同一网络的历史快照比较：展示新增、IP 变化和本次未见设备](docs/images/netspace-history-comparison.png)
+
 ## 能做什么
 
 ```text
@@ -40,10 +44,12 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 08  REVIEW     筛出尚未确认且未忽略的设备，并同步聚焦 3D 节点
 09  GROUP      按设备档案分组筛选，并与状态、搜索和待复核条件组合
 10  ALERT      可选 Windows 桌面提醒；通知只显示新设备数量
+11  DIFF       比较同一网络的两次本地快照，查看设备与 IP 变化
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
 - 历史回放、演示数据和当前发现相互隔离。
+- 历史快照按稳定设备记录标识比较；“本次未见”不代表设备已确认离线。
 - Three.js 和页面资源随项目提供，界面可以离线加载。
 - SQLite 设备档案和历史数据在应用重启后保留。
 - 可选桌面提醒需在界面中手动授权；无权限或不支持时继续使用页面内提醒。桌面提醒只在 NetSpace 页面打开期间运行，且不显示设备名称、IP 或 MAC。
@@ -136,7 +142,7 @@ Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：81 项 Python 测试通过；Windows 可执行文件、桌面通知权限与隐私、拒绝权限后的页面内降级、扫描失败恢复、待复核设备队列和设备分组筛选验证通过。详细记录见 [docs/verification-1.6.0-2026-11-20.md](docs/verification-1.6.0-2026-11-20.md)。
+**当前验证记录**：81 项 Python 测试通过；Windows 单文件程序构建与打包运行、历史快照差异分类、同网段校验、过期请求隔离、恶意名称安全呈现和 375 px 布局检查通过。详细记录见 [docs/verification-1.7.0-2026-11-20.md](docs/verification-1.7.0-2026-11-20.md)。
 
 ## 架构速览
 
@@ -214,3 +220,10 @@ Windows adapters / neighbor cache / native address resolution
 - 分组筛选与发现状态、待复核和名称/IP/MAC 搜索组合；设备列表、匹配数量和 3D 节点同步更新。切换网卡、演示或历史视图时自动清空。
 - 保存、改名或清空设备档案分组后，筛选选项立即更新；不新增网络访问、数据库表或第三方依赖。
 - **验证**：Python 81 项测试通过；Chromium 覆盖真实结果与演示数据中的分组、未分组、组合筛选、档案变更、网卡切换重置、3D 联动和 375 px 布局；Windows 单文件构建与打包运行检查继续通过。详见 [docs/verification-1.6.0-2026-11-20.md](docs/verification-1.6.0-2026-11-20.md)。
+
+### 1.7.0 — 历史快照差异（2026-11-20）
+
+- 历史页可选择同一网络的两次本地发现快照，按稳定设备标识展示新增、IP 变化、本次未见和未变化记录，并给出设备数及变化数量摘要。
+- 切换网络、快照选择或进入演示模式时会清除结果并使尚未完成的读取失效；请求返回时再次验证网络和快照身份，防止过期或错网结果混入。
+- 设备名称与地址始终以纯文本展示；“本次未见”仅表示快照里没有发现记录，不能据此确认设备离线。该功能只读取本机保存的历史记录。
+- **验证**：Python 回归、Chromium 分类/空结果/恶意名称检查、手动和自动网络切换、演示模式竞态、375 px 布局及 Windows 打包检查通过。详见 [docs/verification-1.7.0-2026-11-20.md](docs/verification-1.7.0-2026-11-20.md)。
