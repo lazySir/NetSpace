@@ -17,8 +17,34 @@ function snapshot(adapter, networkId, scanId, historical = false) {
   ];
   return { networkId, scanId, interface: adapter, devices, links: [{ source: devices[0].id, target: devices[1].id }], scannedAt: historical ? '2026-11-18T09:00:00Z' : '2026-11-19T02:00:00Z', durationMs: 120, scope: { cidr: adapter.cidr, scanCidr: adapter.cidr }, warnings: [] };
 }
+function parseCsv(text) {
+  const rows = [[]], quotedRows = []; let value = '', quoted = false, afterQuote = false, fieldStarted = false;
+  for (let index = 0; index < text.length; index++) {
+    const character = text[index];
+    if (quoted) {
+      if (character === '"' && text[index + 1] === '"') { value += '"'; index++; }
+      else if (character === '"') { quoted = false; afterQuote = true; }
+      else value += character;
+    } else {
+      if (afterQuote && character !== ',' && !(character === '\r' && text[index + 1] === '\n')) throw new Error('Invalid characters after CSV quote');
+      if (character === '"') { if (value) throw new Error('Quote inside unquoted CSV field'); quoted = true; afterQuote = false; fieldStarted = true; quotedRows[rows.length - 1] = true; }
+      else if (character === ',') { rows.at(-1).push(value); value = ''; afterQuote = false; fieldStarted = false; }
+      else if (character === '\r' && text[index + 1] === '\n') { rows.at(-1).push(value); rows.push([]); value = ''; afterQuote = false; fieldStarted = false; index++; }
+      else if (character === '\n') { rows.at(-1).push(value); rows.push([]); value = ''; afterQuote = false; fieldStarted = false; }
+      else { value += character; fieldStarted = true; }
+    }
+  }
+  if (quoted) throw new Error('Unterminated quoted CSV field');
+  if (fieldStarted || rows.at(-1).length) rows.at(-1).push(value);
+  return rows.filter((row, index) => row.length && !(row.length === 1 && row[0] === '' && !quotedRows[index]));
+}
 async function run() {
   fs.mkdirSync(output, { recursive: true });
+  assert.deepEqual(parseCsv('"edge""quote",,"multi\r\nline"\r\n'), [['edge"quote', '', 'multi\r\nline']], 'CSV parsing should retain escaped quotes, empty trailing fields and embedded CRLF');
+  assert.deepEqual(parseCsv('""'), [['']], 'CSV parsing should retain a quoted single empty field');
+  assert.throws(() => parseCsv('"closed"x'), /Invalid characters after CSV quote/);
+  assert.throws(() => parseCsv('un"quoted'), /Quote inside unquoted CSV field/);
+  assert.throws(() => parseCsv('"unterminated'), /Unterminated quoted CSV field/);
   const browser = await chromium.launch({ executablePath: process.env.NETSPACE_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
   try {
     const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce', acceptDownloads: true });
@@ -50,6 +76,9 @@ async function run() {
     comparisonBefore.devices.push({ id: '192.168.50.44', deviceKey: 'printer', ip: '192.168.50.44', hostname: 'PRINTER', kind: 'device', mac: '02:00:00:00:00:44', status: 'cached', profile: blank(), evidence: ['neighbor-cache'] });
     const comparisonAfter = snapshot(adapters[0], 'network-A', 5);
     comparisonAfter.devices = [comparisonAfter.devices[0], { ...comparisonAfter.devices[1], id: '192.168.50.21', ip: '192.168.50.21' }, { id: '192.168.50.45', deviceKey: 'nas', ip: '192.168.50.45', hostname: 'LAB-NAS', kind: 'device', mac: '02:00:00:00:00:45', status: 'resolved', profile: blank(), evidence: ['arp'] }];
+    delete comparisonBefore.devices[1].deviceKey;
+    delete comparisonAfter.devices[1].deviceKey;
+    comparisonAfter.devices[1].mac = '0200.0000.0020';
     const comparisonSame = { ...comparisonAfter, scanId: 7, scannedAt: '2026-11-19T03:00:00Z' };
     const comparisonForeign = snapshot(adapters[1], 'network-B', 6);
     let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b], availableHistoryIds = null;
@@ -241,6 +270,8 @@ async function run() {
     assert.equal(await page.locator('#history-compare-source').count(), 1, 'history should provide a source snapshot selector for comparisons');
     assert.equal(await page.locator('#history-compare-target').count(), 1, 'history should provide a target snapshot selector for comparisons');
     assert.equal(await page.locator('#history-compare-button').count(), 1, 'history should provide an explicit comparison action');
+    assert.equal(await page.locator('#history-csv-button').count(), 1, 'history should provide a CSV export action for snapshot differences');
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'difference CSV should stay disabled before a comparison exists');
     await page.waitForFunction(() => document.querySelector('#history-compare-source option[value="4"]') && document.querySelector('#history-compare-target option[value="5"]'));
     await page.locator('#history-compare-source').selectOption('4');
     await page.locator('#history-compare-target').selectOption('5');
@@ -248,6 +279,44 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
     const compareSummary = await page.locator('#history-comparison-status').innerText();
     assert.match(compareSummary, /IP 变化 1/); assert.match(compareSummary, /本次未见 1/); assert.match(compareSummary, /未变化 1/);
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), false, 'difference CSV should enable after a comparison completes');
+    const comparisonCsvPromise = page.waitForEvent('download');
+    await page.locator('#history-csv-button').click();
+    const comparisonCsv = await comparisonCsvPromise;
+    const comparisonCsvPath = path.join(output, 'history-comparison.csv');
+    await comparisonCsv.saveAs(comparisonCsvPath);
+    const comparisonCsvBytes = fs.readFileSync(comparisonCsvPath);
+    assert.equal(comparisonCsvBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'difference CSV should include a UTF-8 BOM');
+    const comparisonCsvText = comparisonCsvBytes.subarray(3).toString('utf8');
+    assert.ok(comparisonCsvText.includes('历史快照差异'), 'difference CSV should identify its source');
+    assert.ok(comparisonCsvText.includes('新增') && comparisonCsvText.includes('IP 变化') && comparisonCsvText.includes('本次未见'), 'difference CSV should include each change category');
+    assert.ok(comparisonCsvText.includes('192.168.50.21') && comparisonCsvText.includes('192.168.50.44'), 'difference CSV should include new and previous addresses');
+    comparisonAfter.devices[2].profile = { ...blank(), alias: '=HYPERLINK("https://example.invalid")', group: '+SUM(1,2)', notes: 'line one, "quoted"\r\nline two' };
+    await page.locator('#history-compare-button').click();
+    await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
+    const protectedCsvPromise = page.waitForEvent('download');
+    await page.locator('#history-csv-button').click();
+    const protectedCsv = await protectedCsvPromise;
+    await protectedCsv.saveAs(path.join(output, 'history-comparison-protected.csv'));
+    const parsedComparison = parseCsv(fs.readFileSync(path.join(output, 'history-comparison-protected.csv'), 'utf8').slice(1));
+    assert.deepEqual(parsedComparison[0], ['来源', '导出时间', '网络范围', '起始快照时间', '对比快照时间', '变化类型', '设备名称', 'MAC 地址', '稳定记录标识', '起始 IP 地址', '对比 IP 地址', '起始状态', '对比状态', '分组', '备注', '说明']);
+    assert.equal(parsedComparison.length, 4, 'difference CSV should export only added, changed and missing devices');
+    const addedRow = parsedComparison.find(row => row[5] === '新增');
+    assert.equal(addedRow[0], '历史快照差异'); assert.equal(addedRow[2], '192.168.50.0/24');
+    assert.equal(addedRow[6], "'=HYPERLINK(\"https://example.invalid\")");
+    assert.equal(addedRow[7], '02:00:00:00:00:45'); assert.equal(addedRow[10], '192.168.50.45');
+    assert.equal(addedRow[13], "'+SUM(1,2)");
+    assert.equal(addedRow[14], 'line one, "quoted"\r\nline two');
+    const changedRow = parsedComparison.find(row => row[5] === 'IP 变化');
+    assert.equal(changedRow[9], '192.168.50.20'); assert.equal(changedRow[10], '192.168.50.21');
+    const missingRow = parsedComparison.find(row => row[5] === '本次未见');
+    assert.equal(missingRow[9], '192.168.50.44'); assert.equal(missingRow[10], '');
+    assert.equal(missingRow[15], '本次未见不代表已确认离线');
+    assert.ok(parsedComparison.slice(1).every(row => row.length === 16), 'each comparison row must preserve the complete CSV field shape');
+    assert.equal(changedRow[8], 'mac:020000000020', 'CSV identity must follow the comparison MAC fallback when deviceKey is absent');
+    comparisonAfter.devices[2].profile = blank();
+    await page.locator('#history-compare-button').click();
+    await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
     assert.equal(await page.locator('#history-comparison-list [data-change-kind="added"]').count(), 1);
     assert.equal(await page.locator('#history-comparison-list [data-change-kind="ip-changed"]').count(), 1);
     assert.equal(await page.locator('#history-comparison-list [data-change-kind="missing"]').count(), 1);
@@ -256,6 +325,7 @@ async function run() {
     availableHistoryIds = new Set([1, 2, 5, 7]);
     await page.waitForFunction(() => !document.querySelector('#history-compare-source option[value="4"]'), null, { timeout: 7000 });
     assert.equal(await page.locator('#history-comparison-list li').count(), 0, 'pruning a selected snapshot must clear the result for the prior pair');
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'pruning a selected snapshot must disable its stale CSV export');
     assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'pruning must replace the stale comparison summary');
     availableHistoryIds = null;
     await page.waitForFunction(() => document.querySelector('#history-compare-source option[value="4"]'), null, { timeout: 7000 });
@@ -268,6 +338,7 @@ async function run() {
     await page.locator('#history-compare-button').click();
     await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('未变化 3'));
     assert.equal(await page.locator('#history-comparison-list .comparison-no-change').count(), 1, 'identical snapshots should show a clear empty-diff message');
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'an identical comparison should not offer an empty difference export');
     await page.locator('#history-compare-source').selectOption('4');
     await page.locator('#history-compare-target').selectOption('5');
     await page.setViewportSize({ width: 375, height: 900 });
@@ -275,6 +346,10 @@ async function run() {
     assert.ok(await page.locator('#history-comparison-section').isVisible(), 'history comparison controls remain available on narrow screens');
     await page.locator('#history-compare-button').click();
     await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.setViewportSize({ width: 320, height: 800 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'history difference export must fit a 320px screen');
+    assert.ok(await page.locator('#history-csv-button').isVisible(), 'history difference export remains visible on a 320px screen');
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.locator('#history-compare-target').selectOption('4');
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'the same snapshot cannot be compared against itself');
@@ -291,6 +366,7 @@ async function run() {
     await page.waitForTimeout(300);
     assert.equal(await page.locator('#history-comparison-list li').count(), 0, 'a late response from the previous network must not appear');
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'network switch must clear prior comparison selections');
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'network switch must disable the previous network CSV');
     await page.locator('#network-filter').selectOption('network-A');
     await page.waitForFunction(() => document.querySelector('#history-scan option[value="1"]'));
     await page.locator('#history-compare-source').selectOption('4');
@@ -299,6 +375,7 @@ async function run() {
     for (let retry = 0; !releaseComparison && retry < 40; retry++) await page.waitForTimeout(100);
     assert.ok(releaseComparison, 'fixture should hold the demo-mode comparison request');
     await page.locator('#demo-toggle').click(); await page.locator('#demo-banner').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'demo mode must not expose a prior network comparison export');
     await page.locator('#leave-demo').click(); await page.locator('#demo-banner').waitFor({ state: 'hidden' });
     releaseComparison(); releaseComparison = null; delayComparison = false;
     await page.waitForTimeout(250);
@@ -421,7 +498,7 @@ async function run() {
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'automatic network reselection must not enable a comparison using only the new network latest snapshot');
     assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'automatic network reselection must replace old results with the empty state');
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'history difference CSV fields, injection protection and 320px layout', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
   } finally { await browser.close(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

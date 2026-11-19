@@ -1,3 +1,5 @@
+import { buildHistoryComparisonCsv } from '/csv.js';
+import { deviceIdentity } from '/identity.js';
 const EMPTY_PROFILE = { alias: '', notes: '', group: '', known: false, ignored: false };
 const EVENT_LABELS = { new: '新设备', returned: '再次发现', not_seen: '本次未见', ip_changed: 'IP 已变化' };
 
@@ -134,6 +136,8 @@ export function createWorkspace(options) {
   }
   function renderComparison() {
     const list = ui['history-comparison-list'], status = ui['history-comparison-status'];
+    const differenceCount = comparisonResult ? comparisonResult.added.length + comparisonResult.changed.length + comparisonResult.missing.length : 0;
+    ui['history-csv-button'].disabled = options.isStopped() || options.isDemo() || comparisonLoading || differenceCount === 0;
     list.replaceChildren();
     if (comparisonLoading) { status.textContent = '正在读取两次本地快照…'; return; }
     if (comparisonError) { status.textContent = comparisonError; return; }
@@ -154,10 +158,15 @@ export function createWorkspace(options) {
     }
     if (!entries.length) { const empty = document.createElement('li'); empty.className = 'comparison-no-change'; empty.textContent = '两次快照中的设备身份与 IP 地址没有可见变化。'; list.append(empty); }
   }
-  function deviceIdentity(device) {
-    if (typeof device.deviceKey === 'string' && device.deviceKey) return 'key:' + device.deviceKey;
-    const mac = typeof device.mac === 'string' ? device.mac.replace(/[^a-f0-9]/gi, '').toLowerCase() : '';
-    return mac ? 'mac:' + mac : 'ip:' + String(device.id || device.ip || '');
+  function exportHistoryComparison() {
+    if (!comparisonResult || options.isDemo() || options.isStopped()
+      || comparisonResult.added.length + comparisonResult.changed.length + comparisonResult.missing.length === 0) return;
+    const csv = buildHistoryComparisonCsv(comparisonResult, { exportedAt: new Date().toISOString() });
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a'); anchor.href = url;
+    anchor.download = 'netspace-HISTORY-DIFF-' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
+    document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('已导出 ' + (comparisonResult.added.length + comparisonResult.changed.length + comparisonResult.missing.length) + ' 项历史差异');
   }
   async function compareHistory() {
     if (options.isDemo() || options.isStopped() || !networkId) return;
@@ -335,6 +344,7 @@ export function createWorkspace(options) {
     ui['history-compare-button'].disabled = options.isStopped() || options.isDemo() || comparisonLoading || !comparisonSourceId || !comparisonTargetId || comparisonSourceId === comparisonTargetId;
   });
   ui['history-compare-button'].addEventListener('click', compareHistory);
+  ui['history-csv-button'].addEventListener('click', exportHistoryComparison);
   ui['history-scan'].addEventListener('change', async () => {
     const id = ui['history-scan'].value;
     if (!id || options.isDemo() || options.isStopped()) return;
