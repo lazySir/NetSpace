@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080f1b">
+  <meta name="description" content="本机局域网设备发现与三维网络关系可视化。空间位置为模拟布局。">
+  <title>NETSPACE · 局域网视界</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">{"imports":{"three":"/vendor/three.module.js"}}</script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#device-search">跳转到设备搜索</a>
+  <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-scan" viewBox="0 0 24 24"><path d="M8 3H4a1 1 0 0 0-1 1v4m13-5h4a1 1 0 0 1 1 1v4M3 16v4a1 1 0 0 0 1 1h4m8 0h4a1 1 0 0 0 1-1v-4M8 12h8m-4-4v8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-router" viewBox="0 0 24 24"><rect x="3" y="12" width="18" height="8" rx="2"/><path d="M7 12V5m10 7V5M7 16h.01M11 16h.01M15 16h3M5 3l2 2 2-2m6 0 2 2 2-2"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></symbol>
+    <symbol id="i-laptop" viewBox="0 0 24 24"><path d="M5 16V6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v10M2 16h20l-2 4H4z"/></symbol>
+    <symbol id="i-export" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M20 7c-1.6-2.4-4.6-4-8-4a9 9 0 0 0-8 5m16-5v4h-4M4 17c1.6 2.4 4.6 4 8 4a9 9 0 0 0 8-5M4 21v-4h4"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6m0-10h.01"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-network" viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="6" rx="1.5"/><path d="M12 9v5M5 14h14M5 14v3m14-3v3"/><rect x="2" y="17" width="6" height="4" rx="1"/><rect x="16" y="17" width="6" height="4" rx="1"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10M6 5a9 9 0 1 0 12 0"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="NETSPACE 局域网视界首页">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span class="brand-name">NETSPACE<span class="brand-divider">/</span><span class="brand-chinese">局域网视界</span></span>
+      </a>
+      <div class="header-actions">
+        <div class="adapter-control">
+          <svg class="icon" aria-hidden="true"><use href="#i-network"/></svg>
+          <label class="sr-only" for="interface-select">选择网络适配器</label>
+          <select id="interface-select" disabled><option>正在读取网络适配器…</option></select>
+        </div>
+        <button class="button button-primary" id="scan-button" disabled><svg class="icon" aria-hidden="true"><use href="#i-scan"/></svg><span id="scan-button-text">发现设备</span></button>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="workspace-heading" aria-labelledby="page-title">
+        <div><div class="eyebrow"><span class="tiny-square"></span> LOCAL NETWORK EXPLORER</div><h1 id="page-title">你的网络，尽在视界。</h1><p class="page-subtitle">发现身边的设备，探索它们的网络关系。</p></div>
+        <div class="workspace-tools"><span class="local-badge"><span class="status-dot"></span>本机运行</span><button class="demo-switch" id="demo-toggle" type="button" role="switch" aria-checked="false"><span>演示模式</span><span class="switch-track" aria-hidden="true"><span></span></span></button></div>
+      </section>
+
+      <div class="demo-banner" id="demo-banner" hidden><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p><strong>当前为演示模式</strong><span>以下设备均为虚构数据，不代表当前局域网。</span></p><button id="leave-demo" class="text-button">返回真实网络 <span aria-hidden="true">→</span></button></div>
+      <div class="replay-banner" id="replay-banner" hidden><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p><strong>正在回看历史快照</strong><span id="replay-description"></span></p><button id="return-current" class="text-button">返回当前网络 →</button></div>
+      <section class="monitor-toolbar" aria-label="定时发现与提醒">
+        <div class="monitor-title"><span class="status-dot" id="monitor-dot"></span><strong>定时发现</strong><span id="monitor-status">尚未开启</span></div>
+        <div class="monitor-controls"><label class="sr-only" for="monitor-interval">定时发现间隔</label><select id="monitor-interval"><option value="60">每 1 分钟</option><option value="300" selected>每 5 分钟</option><option value="600">每 10 分钟</option></select><button id="monitor-toggle" class="compact-button" disabled>开始定时</button><span id="monitor-next">下一次：—</span><button id="mute-toggle" class="compact-button quiet-button" aria-pressed="false" title="静音后仍记录网络变化" disabled>提醒已开启</button></div>
+        <p id="monitor-message" class="monitor-message" role="status" hidden></p>
+      </section>
+      <div class="notice" id="notice" role="status" hidden></div>
+
+      <section class="stats-grid" aria-label="网络概览">
+        <div class="stat-card"><div class="stat-label">已发现设备<span class="stat-index">01</span></div><div class="stat-value-row"><strong class="stat-number" id="stat-total">—</strong><span class="stat-unit">台设备</span><span class="stat-spark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span></div></div>
+        <div class="stat-card"><div class="stat-label">已确认在线<span class="stat-index">02</span></div><div class="stat-value-row"><strong class="stat-number mint" id="stat-online">—</strong><span class="stat-unit">台设备</span><span class="metric-indicator"><span class="status-dot"></span>本次发现</span></div></div>
+        <div class="stat-card"><div class="stat-label">当前发现范围<span class="stat-index">03</span></div><div class="stat-value-row"><strong class="stat-cidr mono" id="stat-cidr">等待适配器</strong></div><div class="stat-caption" id="stat-scope">IPv4 局域网</div></div>
+        <div class="stat-card"><div class="stat-label">最近一次发现<span class="stat-index">04</span></div><div class="stat-value-row"><strong class="stat-time mono" id="stat-time">--:--:--</strong><span class="stat-unit" id="stat-duration">尚未发现</span></div><div class="stat-caption" id="stat-date">结果保存在当前会话中</div></div>
+      </section>
+
+      <section class="network-workspace" aria-label="网络探索工作区">
+        <aside class="device-panel panel" aria-labelledby="devices-title">
+          <div class="workspace-tabs" role="tablist" aria-label="设备与发现记录"><button id="tab-devices" role="tab" aria-selected="true" aria-controls="devices-pane" tabindex="0">设备</button><button id="tab-history" role="tab" aria-selected="false" aria-controls="history-pane" tabindex="-1">历史</button><button id="tab-events" role="tab" aria-selected="false" aria-controls="events-pane" tabindex="-1">变化 <span id="unread-count" class="unread-badge">0</span></button></div>
+          <div id="archive-controls" class="archive-controls" hidden><label for="network-filter">记录所属网络</label><select id="network-filter"><option value="">尚无本地记录</option></select><p id="archive-message" role="status" hidden></p></div>
+          <div id="devices-pane" role="tabpanel" aria-labelledby="tab-devices" class="device-tab-content">
+          <div class="panel-heading"><h2 id="devices-title">设备列表 <span class="count-badge" id="device-count">0</span></h2><span class="micro-label" id="list-source">真实网络</span></div>
+          <div class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="device-search">搜索设备名称、IP 或 MAC</label><input type="search" id="device-search" placeholder="搜索名称、IP 或 MAC" autocomplete="off"></div>
+          <div class="list-caption"><span>设备 / IP 地址</span><span id="filter-info">全部设备</span></div>
+          <ul id="device-list" class="device-list" aria-label="已发现设备"></ul>
+          <div id="list-empty" class="list-empty"><span class="empty-line"></span><p>设备将在发现后显示</p></div>
+          <div class="device-panel-bottom"><span class="status-dot"></span><span id="device-panel-note">从本机发现当前局域网</span></div>
+          </div>
+          <div id="history-pane" class="archive-pane" role="tabpanel" aria-labelledby="tab-history" hidden><div class="archive-heading"><h2>发现历史</h2><span class="micro-label">本机保存</span></div><label class="sr-only" for="history-scan">选择历史发现快照</label><select id="history-scan" size="7"><option value="">尚无历史记录</option></select><p class="archive-help">选择一次发现，回看当时的设备。历史快照仅供查看，保存的设备档案不会丢失。</p></div>
+          <div id="events-pane" class="archive-pane" role="tabpanel" aria-labelledby="tab-events" hidden><div class="archive-heading"><h2>网络变化</h2><button id="events-read" class="text-button" disabled>标为已读</button></div><ul id="event-list" class="event-list" aria-label="设备变化记录"></ul><p id="events-empty" class="archive-help">尚无变化记录。首次发现建立基准，后续变化将在这里显示。</p><p class="archive-help">“本次未见”仅表示此次未发现，不代表已确认离线。</p></div>
+        </aside>
+
+        <section class="scene-panel" aria-labelledby="scene-title">
+          <div class="scene-heading"><div><div class="eyebrow">NETWORK TOPOLOGY</div><h2 id="scene-title">网络空间 <span class="space-badge">3D</span></h2></div><span class="scene-mode" id="scene-mode"><span></span>模拟空间 · 真实设备</span></div>
+          <div id="scan-progress" class="scan-progress" hidden><div class="scan-progress-label"><span class="loading-ring"></span><span id="progress-message">正在发现设备…</span><span id="progress-number"></span></div><div class="progress-track"><span id="progress-bar"></span></div></div>
+          <div class="scene-view" id="scene-view">
+            <div id="scene-canvas" aria-hidden="true"></div>
+            <div id="scene-labels"></div>
+            <div class="scene-corner corner-tl" aria-hidden="true"></div><div class="scene-corner corner-br" aria-hidden="true"></div>
+            <div class="scene-coordinates" aria-hidden="true"><span>NS / 01</span><span>LOCAL SPACE</span></div>
+            <div class="scene-empty" id="scene-empty"><div class="empty-orbit" aria-hidden="true"><span></span><svg class="icon"><use href="#i-network"/></svg></div><h3 id="scene-empty-title">正在连接本机网络</h3><p id="scene-empty-description">读取网络适配器后，将开始发现设备。</p><button class="button button-secondary" id="retry-button" hidden>重新连接</button></div>
+            <div class="scene-legend"><span><i class="legend-dot gateway"></i>默认网关</span><span><i class="legend-dot self"></i>本机</span><span><i class="legend-dot device"></i>其他设备</span></div>
+            <div class="scene-interaction-hint" id="scene-hint">拖动旋转 · 滚轮缩放 · 点击设备查看</div>
+          </div>
+          <div class="scene-bottom"><span class="relation-note"><span class="dashed-line" aria-hidden="true"></span>连线为同网段关系推断</span><div class="scene-controls"><button class="icon-button" id="rotate-button" aria-pressed="false" title="开启自动旋转" aria-label="开启自动旋转"><svg class="icon" aria-hidden="true"><use href="#i-rotate"/></svg></button><span class="control-divider"></span><button class="icon-button" id="reset-button" title="重置视角" aria-label="重置视角"><svg class="icon" aria-hidden="true"><use href="#i-reset"/></svg></button></div></div>
+        </section>
+
+        <aside class="details-panel panel" aria-labelledby="details-title">
+          <div class="panel-heading"><h2 id="details-title">设备详情</h2><span class="detail-kicker">INSPECTOR</span></div>
+          <div class="detail-empty" id="detail-empty"><div class="detail-empty-icon"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></div><h3>选择一个设备</h3><p>点击空间中的节点或左侧列表，<br>查看设备与发现信息。</p></div>
+          <div class="detail-content" id="detail-content" hidden>
+            <div class="detail-identity"><div class="detail-device-icon" id="detail-device-icon"><svg class="icon" aria-hidden="true"><use id="detail-icon-use" href="#i-router"/></svg></div><span class="detail-kind" id="detail-kind">默认网关</span><h3 id="detail-name">网络设备</h3><div class="detail-address"><span class="mono" id="detail-ip-heading"></span><button id="copy-ip" class="small-icon-button" aria-label="复制 IP 地址" title="复制 IP 地址"><svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg></button></div><span class="device-status" id="detail-status"></span></div>
+            <dl class="detail-properties"><div><dt>IP 地址</dt><dd class="mono" id="detail-ip"></dd></div><div><dt>MAC 地址</dt><dd class="mono" id="detail-mac"></dd></div><div><dt>主机名称</dt><dd id="detail-hostname"></dd></div><div><dt>地址解析耗时</dt><dd id="detail-latency"></dd></div><div><dt>所属网段</dt><dd class="mono" id="detail-subnet"></dd></div></dl>
+            <form id="profile-form" class="profile-form"><div class="profile-heading"><h4>设备档案</h4><span>仅保存在本机</span></div><div class="observation-times"><span>首次 <time id="profile-first-seen">—</time></span><span>最近 <time id="profile-last-seen">—</time></span></div><label for="profile-alias">备注名称<input id="profile-alias" maxlength="80" placeholder="给设备起个容易认出的名字" autocomplete="off"></label><label for="profile-group">分组<input id="profile-group" maxlength="40" placeholder="例如：家庭、办公" autocomplete="off"></label><label for="profile-notes">备注<textarea id="profile-notes" maxlength="1000" rows="2" placeholder="位置、用途或其他记录"></textarea></label><div class="profile-flags"><label><input id="profile-known" type="checkbox">已认识</label><label><input id="profile-ignored" type="checkbox">忽略提醒</label></div><div class="profile-save-row"><button id="profile-save" class="compact-button" type="submit" disabled>保存档案</button><span id="profile-status" role="status"></span></div></form>
+            <div class="evidence-section"><h4>发现依据</h4><div class="evidence-tags" id="detail-evidence"></div></div>
+            <div class="detail-explanation"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p id="detail-explanation">节点位置为模拟布局，不表示设备的实际物理位置；同网段连线不表示已验证的物理连接。</p></div>
+          </div>
+          <div class="details-bottom"><span class="outline-square" aria-hidden="true"></span>空间仅用于呈现网络关系</div>
+        </aside>
+      </section>
+
+      <footer class="workspace-footer"><div class="footer-status"><span class="status-dot" id="footer-dot"></span><span id="footer-status">正在连接本机服务</span><span class="footer-separator">/</span><span id="footer-range">发现范围：等待适配器</span></div><div class="footer-actions"><button id="export-button" class="text-button" disabled><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>导出 JSON</button><span class="footer-separator">/</span><button id="shutdown-button" class="text-button subtle-button"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>停止服务</button></div></footer>
+      <p class="privacy-note">本机发现 · 本地呈现 <span>—</span> 设备结果来自当前扫描及系统邻居记录，缓存记录不等于当前在线。</p>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
