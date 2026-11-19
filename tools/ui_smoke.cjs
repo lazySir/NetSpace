@@ -22,11 +22,11 @@ function resultFor(adapter, count = 3) {
   const prefix = adapter.ip.slice(0, adapter.ip.lastIndexOf('.') + 1);
   const devices = [
     { id: adapter.ip, ip: adapter.ip, hostname: 'WORKSTATION', mac: adapter.mac, kind: 'self', status: 'online', evidence: ['本机已连接的 IPv4 网络接口'], latencyMs: null },
-    { id: adapter.gateway, ip: adapter.gateway, hostname: null, mac: '02:00:00:00:00:01', kind: 'gateway', status: 'resolved', evidence: ['本次地址解析成功，可能来自系统缓存，不保证当前在线'], latencyMs: .8 },
+    { id: adapter.gateway, ip: adapter.gateway, hostname: null, mac: '02:00:00:00:00:01', kind: 'gateway', status: 'resolved', evidence: ['本次地址解析成功，可能来自系统缓存，不保证当前在线'], latencyMs: .8, profile: { alias: '', notes: '', group: '基础设施', known: false, ignored: false } },
   ];
   for (let index = 2; index < count; index++) {
     const ip = prefix + (index + 40);
-    devices.push({ id: ip, ip, hostname: index === 2 ? 'DESKTOP-LAB' : null, mac: '02:00:00:00:' + index.toString(16).padStart(2, '0') + ':42', kind: 'device', status: index % 2 ? 'cached' : 'resolved', evidence: ['设备地址解析记录'], latencyMs: 1.2 });
+    devices.push({ id: ip, ip, hostname: index === 2 ? 'DESKTOP-LAB' : null, mac: '02:00:00:00:' + index.toString(16).padStart(2, '0') + ':42', kind: 'device', status: index % 2 ? 'cached' : 'resolved', evidence: ['设备地址解析记录'], latencyMs: 1.2, profile: { alias: '', notes: '', group: '工作设备', known: false, ignored: false } });
   }
   return { interface: adapter, devices, links: devices.filter(x => x.id !== adapter.gateway).map(x => ({ source: adapter.gateway, target: x.id, kind: 'same-subnet', inferred: true })), warnings: [], scannedAt: '2026-11-19T10:20:30+08:00', durationMs: 19000, scope: { cidr: adapter.cidr, scanCidr: adapter.scanCidr, targetCount: 253, limited: false } };
 }
@@ -76,6 +76,19 @@ async function run() {
   await page.waitForTimeout(150);
   assert.equal(await page.locator('#device-list button').count(), 1, 'search should filter devices');
   await page.locator('#device-search').fill('');
+  assert.equal(await page.locator('#device-group-filter').count(), 1, 'device panel should provide a profile-group filter');
+  await page.locator('#device-group-filter').selectOption({ label: '工作设备' });
+  assert.equal(await page.locator('#device-list button').count(), 1, 'group filter should find saved profile groups in live results');
+  await assertTopologyHonorsListFilter(page, 'live profile group');
+  await page.locator('#needs-review-filter').check();
+  await page.locator('#device-status-filter').selectOption('cached');
+  assert.equal(await page.locator('#device-list button').count(), 0, 'group, review, and status filters should compose');
+  await page.locator('#needs-review-filter').uncheck();
+  await page.locator('#device-status-filter').selectOption('');
+  await page.locator('#device-group-filter').selectOption('');
+  await page.locator('#device-group-filter').selectOption('ungrouped');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'live ungrouped filter should show records without a saved group');
+  await page.locator('#device-group-filter').selectOption('');
   assert.equal(await page.locator('#needs-review-filter').count(), 1, 'device panel should provide a review-queue control');
   await page.locator('#needs-review-filter').check();
   assert.equal(await page.locator('#device-list button').count(), 2, 'review queue should show unresolved peers and omit the local computer');
@@ -91,6 +104,14 @@ async function run() {
   assert.ok(Number(await page.locator('#stat-total').innerText()) > 3);
   assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'entering demo resets the previous network status filter');
   assert.equal(await page.locator('#needs-review-filter').isChecked(), false, 'entering demo resets the review queue filter');
+  assert.equal(await page.locator('#device-group-filter').inputValue(), '', 'entering demo resets the previous network group filter');
+  await page.locator('#device-group-filter').selectOption({ label: '工作设备' });
+  assert.equal(await page.locator('#device-list button').count(), 3, 'group filter should show every device assigned to that profile group');
+  await assertTopologyHonorsListFilter(page, 'profile group');
+  assert.equal((await page.locator('#filter-info').innerText()).trim(), '3 / 12', 'group filter should update the visible count');
+  await page.locator('#device-group-filter').selectOption({ label: '未分组' });
+  assert.equal(await page.locator('#device-list button').count(), 2, 'ungrouped filter should include records without a saved group');
+  await page.locator('#device-group-filter').selectOption('');
   const statusCases = [['online', 1], ['resolved', 8], ['cached', 2], ['unverified', 1]];
   for (const [status, count] of statusCases) {
     await page.locator('#device-status-filter').selectOption(status);
@@ -100,16 +121,26 @@ async function run() {
   }
   await page.locator('#device-status-filter').selectOption('');
   await page.locator('#needs-review-filter').check();
+  await page.locator('#device-group-filter').selectOption({ label: '影音设备' });
+  assert.equal(await page.locator('#device-list button').count(), 2, 'group and review filters should intersect');
+  await assertTopologyHonorsListFilter(page, 'combined group and review filters');
+  await page.locator('#device-status-filter').selectOption('cached');
+  assert.equal(await page.locator('#device-list button').count(), 0, 'group, review, and status filters should intersect');
+  await page.locator('#device-status-filter').selectOption('');
+  await page.locator('#device-group-filter').selectOption('');
+  assert.equal(await page.locator('#device-list button').count(), 9, 'clearing group should retain the review queue');
   assert.equal(await page.locator('#device-list button').count(), 9, 'review queue should omit the local computer, recognized and ignored demo devices');
   await assertTopologyHonorsListFilter(page, 'demo review queue');
   assert.equal((await page.locator('#filter-info').innerText()).trim(), '9 / 12', 'review queue count should include every active filter');
   await page.locator('#device-status-filter').selectOption('cached');
-  assert.equal(await page.locator('#device-list button').count(), 1, 'ignored cached demo device should stay out of the review queue');
+  await page.locator('#device-group-filter').selectOption({ label: '影音设备' });
+  assert.equal(await page.locator('#device-list button').count(), 0, 'ignored cached device should stay out of the grouped review queue');
   await page.locator('#device-search').fill('iPhone');
   assert.equal(await page.locator('#device-list button').count(), 0, 'search should compose with review and status filters');
   await page.locator('#device-search').fill('');
   await page.locator('#device-status-filter').selectOption('');
   await page.locator('#needs-review-filter').uncheck();
+  await page.locator('#device-group-filter').selectOption('');
   await page.locator('#device-search').fill('iPhone');
   assert.equal(await page.locator('#device-list button').count(), 1, 'clearing filters should restore matching search results');
   await page.locator('#device-status-filter').selectOption('resolved');
@@ -117,6 +148,11 @@ async function run() {
   await page.locator('#device-search').fill('');
   await page.locator('#device-status-filter').selectOption('');
   assert.equal(await page.locator('#device-list button').count(), 12, 'all status should restore every demo device');
+  await page.locator('#device-group-filter').selectOption({ label: '移动设备' });
+  await page.locator('#device-search').fill('iPhone');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'group filtering should compose with search');
+  await page.locator('#device-search').fill('');
+  await page.locator('#device-group-filter').selectOption('');
   await page.screenshot({ path: path.join(output, 'netspace-demo.png'), fullPage: true });
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-button').click();
@@ -128,10 +164,12 @@ async function run() {
   await page.locator('#demo-banner').waitFor({ state: 'hidden' });
   assert.equal(Number(await page.locator('#stat-total').innerText()), 3);
   await page.locator('#device-status-filter').selectOption('cached');
+  await page.locator('#device-group-filter').selectOption({ label: '基础设施' });
   await page.locator('#needs-review-filter').check();
   await page.locator('#interface-select').selectOption('10');
   assert.equal(await page.locator('#needs-review-filter').isChecked(), false, 'switching adapters resets the review queue');
   assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'switching adapters resets the old status filter');
+  assert.equal(await page.locator('#device-group-filter').inputValue(), '', 'switching adapters resets the old group filter');
   await page.locator('#scan-button').click();
   await page.waitForFunction(() => document.querySelector('#stat-cidr').textContent.includes('192.168.60'));
   assert.equal(await page.locator('#device-list').innerText().then(x => x.includes('192.168.50.')), false, 'old adapter devices must not leak');

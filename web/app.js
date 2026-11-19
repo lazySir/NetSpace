@@ -17,6 +17,8 @@ let selectedId = null;
 let query = '';
 let statusFilter = '';
 let needsReview = false;
+let groupFilter = '';
+let groupFilterSignature = '';
 let pollTimer = null;
 let pollFailures = 0;
 let toastTimer = null;
@@ -48,7 +50,8 @@ function makeDemoResult() {
   const ignored = new Set(['192.168.1.56']);
   const devices = records.map(([suffix, hostname, kind, status, mac, latencyMs]) => {
     const id = '192.168.1.' + suffix;
-    return { id, ip: id, hostname, kind, status, mac, latencyMs, evidence: ['demo'], profile: { alias: '', notes: '', group: '', known: recognized.has(id), ignored: ignored.has(id) } };
+    const groups = { '192.168.1.1': '基础设施', '192.168.1.12': '工作设备', '192.168.1.18': '影音设备', '192.168.1.31': '移动设备', '192.168.1.42': '工作设备', '192.168.1.56': '影音设备', '192.168.1.68': '移动设备', '192.168.1.76': '影音设备', '192.168.1.88': '工作设备', '192.168.1.102': '基础设施' };
+    return { id, ip: id, hostname, kind, status, mac, latencyMs, evidence: ['demo'], profile: { alias: '', notes: '', group: groups[id] || '', known: recognized.has(id), ignored: ignored.has(id) } };
   });
   return { interface: { id: 'demo', alias: '演示网络', ip: '192.168.1.24', cidr: '192.168.1.0/24', scanCidr: '192.168.1.0/24', gateway: '192.168.1.1' }, devices, links: devices.slice(1).map((device) => ({ source: devices[0].id, target: device.id, kind: 'same-subnet', inferred: true })), scannedAt: new Date().toISOString(), durationMs: 1840, scope: { cidr: '192.168.1.0/24', scanCidr: '192.168.1.0/24', targetCount: 253, limited: false }, warnings: [] };
 }
@@ -60,9 +63,25 @@ function isScanning() { return !stopped && (scanStarting || realState.status ===
 function deviceMatches(device) {
   if (statusFilter && device.status !== statusFilter) return false;
   if (needsReview && (device.kind === 'self' || device.profile?.known === true || device.profile?.ignored === true)) return false;
+  const group = typeof device.profile?.group === 'string' ? device.profile.group.trim() : '';
+  if (groupFilter === 'ungrouped' && group) return false;
+  if (groupFilter.startsWith('group:') && group !== groupFilter.slice(6)) return false;
   return !query || [device.profile?.alias, device.profile?.notes, device.profile?.group, device.hostname, device.ip, device.mac, kindNames[device.kind], statusNames[device.status]].some((value) => String(value || '').toLocaleLowerCase().includes(query));
 }
-function resetDeviceFilters() { statusFilter = ''; needsReview = false; query = ''; ui['device-search'].value = ''; ui['device-status-filter'].value = ''; ui['needs-review-filter'].checked = false; }
+function resetDeviceFilters() { statusFilter = ''; needsReview = false; groupFilter = ''; query = ''; ui['device-search'].value = ''; ui['device-status-filter'].value = ''; ui['device-group-filter'].value = ''; ui['needs-review-filter'].checked = false; }
+function renderGroupFilter(devices) {
+  const groups = [...new Set(devices.map((device) => typeof device.profile?.group === 'string' ? device.profile.group.trim() : '').filter(Boolean))].sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  const options = [['', '全部分组'], ['ungrouped', '未分组'], ...groups.map((group) => ['group:' + group, group])];
+  const signature = JSON.stringify(options);
+  if (signature === groupFilterSignature) return;
+  groupFilterSignature = signature;
+  const selected = options.some(([value]) => value === groupFilter) ? groupFilter : '';
+  ui['device-group-filter'].replaceChildren();
+  for (const [value, label] of options) { const option = document.createElement('option'); option.value = value; option.textContent = label; ui['device-group-filter'].append(option); }
+  groupFilter = selected;
+  ui['device-group-filter'].value = selected;
+}
+function filtersActive() { return Boolean(query || statusFilter || needsReview || groupFilter); }
 function text(id, value) { ui[id].textContent = value; }
 function icon(name, className = 'icon') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -191,7 +210,7 @@ function renderList(devices, allCount) {
     button.append(symbol, main, status, icon('arrow', 'icon device-row-chevron'));
     button.addEventListener('click', () => selectDevice(device.id)); li.append(button); ui['device-list'].append(li);
   }
-  const filtered = Boolean(query || statusFilter || needsReview);
+  const filtered = filtersActive();
   text('device-count', String(allCount)); text('filter-info', filtered ? devices.length + ' / ' + allCount : '全部设备');
   ui['list-empty'].hidden = devices.length > 0;
   ui['list-empty'].querySelector('p').textContent = filtered ? '当前筛选条件下没有匹配设备。' : booting ? '正在读取本机网络…' : isScanning() && !demo ? '正在发现，稍后显示设备' : '设备将在发现后显示';
@@ -224,17 +243,18 @@ function renderScene(result, visibleDevices) {
   if (!scene) return;
   const signature = JSON.stringify([demo, interfaceId, result?.scannedAt, result?.devices, result?.links]);
   if (signature !== sceneSignature) { scene.setDevices((result?.devices || []).map((device) => device.profile?.alias ? { ...device, displayName: device.profile.alias } : device), result?.links || []); sceneSignature = signature; }
-  scene.setSelected(selectedId); scene.setFilter(query || statusFilter || needsReview ? new Set(visibleDevices.map((device) => device.id)) : null);
+  scene.setSelected(selectedId); scene.setFilter(filtersActive() ? new Set(visibleDevices.map((device) => device.id)) : null);
 }
 function render() {
   const result = activeResult();
   const devices = result?.devices || [];
+  renderGroupFilter(devices);
   const visibleDevices = devices.filter(deviceMatches);
   const adapter = currentInterface();
   const scanning = isScanning();
   const historical = Boolean(workspace?.replayResult) && !demo;
   if (!devices.some((device) => device.id === selectedId)) selectedId = devices.find((device) => device.kind === 'gateway')?.id || devices.find((device) => device.kind === 'self')?.id || devices[0]?.id || null;
-  if ((query || statusFilter || needsReview) && !visibleDevices.some((device) => device.id === selectedId)) selectedId = visibleDevices[0]?.id || null;
+  if (filtersActive() && !visibleDevices.some((device) => device.id === selectedId)) selectedId = visibleDevices[0]?.id || null;
   const scope = result?.scope?.scanCidr || result?.interface?.scanCidr || (demo ? '192.168.1.0/24' : adapter?.scanCidr || adapter?.cidr);
   text('stat-total', result ? String(devices.length).padStart(2, '0') : '—');
   text('stat-online', result ? String(devices.filter((device) => device.status === 'online').length).padStart(2, '0') : '—');
@@ -270,7 +290,7 @@ function render() {
   ui['scene-empty'].hidden = !showEmpty;
   let emptyTitle = '等待发现你的网络'; let emptyDescription = '选择网络适配器，点击“发现设备”开始探索。';
   if (sceneError && devices.length) { emptyTitle = '当前环境无法显示三维空间'; emptyDescription = '设备数据已加载。你仍可通过设备列表查看详情和导出结果。'; }
-  else if ((query || statusFilter || needsReview) && !visibleDevices.length && devices.length) { emptyTitle = query ? '未找到匹配设备' : needsReview && !statusFilter ? '没有待复核设备' : '没有符合条件的设备'; emptyDescription = query ? '调整搜索关键词或筛选条件，继续探索网络空间。' : '更改左侧筛选条件，查看其他设备。'; }
+  else if (filtersActive() && !visibleDevices.length && devices.length) { emptyTitle = query ? '未找到匹配设备' : needsReview && !statusFilter && !groupFilter ? '没有待复核设备' : '没有符合条件的设备'; emptyDescription = query ? '调整搜索关键词或筛选条件，继续探索网络空间。' : '更改左侧筛选条件，查看其他设备。'; }
   else if (booting) { emptyTitle = '正在连接本机网络'; emptyDescription = '读取网络适配器后，将开始发现设备。'; }
   else if (!interfaceId && !demo) { emptyTitle = '没有可用的网络适配器'; emptyDescription = error || '请连接 Wi-Fi 或有线局域网，然后重新读取。'; }
   else if (error && !devices.length) { emptyTitle = '暂时无法发现设备'; emptyDescription = error; }
@@ -298,6 +318,7 @@ ui['scan-button'].addEventListener('click', () => realState.status === 'error' ?
 ui['interface-select'].addEventListener('change', () => { workspace?.leaveReplay(false); interfaceId = ui['interface-select'].value; selectedId = null; resetDeviceFilters(); if (realState.status === 'error') realState = { ...realState, status: 'idle', error: null }; render(); });
 ui['device-search'].addEventListener('input', () => { query = ui['device-search'].value.trim().toLocaleLowerCase(); render(); });
 ui['device-status-filter'].addEventListener('change', () => { statusFilter = ui['device-status-filter'].value; render(); });
+ui['device-group-filter'].addEventListener('change', () => { groupFilter = ui['device-group-filter'].value; render(); });
 ui['needs-review-filter'].addEventListener('change', () => { needsReview = ui['needs-review-filter'].checked; render(); });
 ui['retry-button'].addEventListener('click', retryDiscovery);
 ui['rotate-button'].addEventListener('click', () => { autoRotate = !autoRotate; updateRotate(); });

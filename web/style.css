@@ -71,4 +71,8 @@ body:before{background:radial-gradient(ellipse at 46% -20%,#1a492b55,transparent
 .review-filter{display:flex;flex:0 0 auto;align-items:center;gap:5px;white-space:nowrap;color:#b7d7bf;font-size:10px;cursor:pointer}
 .review-filter input{width:14px;height:14px;margin:0;accent-color:#60ff9d}
 .review-filter:focus-within{outline:2px solid #81ffad;outline-offset:3px;border-radius:2px}
-@media(max-width:760px){.status-filter{margin-top:9px;min-height:42px}.status-filter select{height:34px;font-size:11px}.filter-prompt{font-size:8px}}
+.group-filter{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:8px;margin:6px 15px 0;padding:6px 8px;border:1px solid #1a3823;border-radius:5px;background:#061009}
+.group-filter select{width:100%;min-width:0;height:30px;padding:0 7px;border:1px solid #24472d;border-radius:4px;background:#08130b;color:#c5e9ce;font-size:10px}
+.group-filter select:hover{border-color:#428052}
+.group-filter select:focus-visible{outline:2px solid #81ffad;outline-offset:2px}
+@media(max-width:760px){.status-filter{margin-top:9px;min-height:42px}.status-filter select,.group-filter select{height:34px;font-size:11px}.group-filter{min-height:42px}.filter-prompt{font-size:8px}}

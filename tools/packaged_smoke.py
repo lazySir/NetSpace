@@ -60,7 +60,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.5.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.6.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:

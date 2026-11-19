@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.5.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.6.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -38,7 +38,8 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 06  EXPORT     导出当前结果、历史快照或演示数据为 JSON
 07  DEMO       用虚构设备体验界面，不访问真实扫描数据
 08  REVIEW     筛出尚未确认且未忽略的设备，并同步聚焦 3D 节点
-09  ALERT      可选 Windows 桌面提醒；通知只显示新设备数量
+09  GROUP      按设备档案分组筛选，并与状态、搜索和待复核条件组合
+10  ALERT      可选 Windows 桌面提醒；通知只显示新设备数量
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
@@ -135,7 +136,7 @@ Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：81 项 Python 测试通过；Windows 可执行文件、桌面通知权限与隐私、拒绝权限后的页面内降级、扫描失败恢复和待复核设备队列验证通过。详细记录见 [`docs/verification-1.5.0-2026-11-20.md`](docs/verification-1.5.0-2026-11-20.md)。
+**当前验证记录**：81 项 Python 测试通过；Windows 可执行文件、桌面通知权限与隐私、拒绝权限后的页面内降级、扫描失败恢复、待复核设备队列和设备分组筛选验证通过。详细记录见 [docs/verification-1.6.0-2026-11-20.md](docs/verification-1.6.0-2026-11-20.md)。
 
 ## 架构速览
 
@@ -206,3 +207,10 @@ Windows adapters / neighbor cache / native address resolution
 - 通知内容仅包含新设备数量，不包含名称、IP 或 MAC；不支持或拒绝权限时继续使用页面内提醒，现有静音设置保持生效。演示数据、历史回放和忽略的设备不会触发新设备通知。
 - 扫描线程启动失败时明确进入错误状态，修复后允许再次发现；扫描记录验证拒绝 NaN 与无穷大耗时，避免异常数据造成存储事务失败。
 - **验证**：Python 81 项测试通过；Chromium 覆盖未自动请求权限、点击授权、拒绝权限降级、隐私内容和重复提醒抑制；桌面及 375 px 窄屏布局、无 CSP 违规和无外部请求检查通过。Windows 单文件构建与打包运行检查通过。详见 [`docs/verification-1.5.0-2026-11-20.md`](docs/verification-1.5.0-2026-11-20.md)。
+
+### 1.6.0 — 设备档案分组筛选（2026-11-20）
+
+- 设备列表新增“分组”筛选，自动读取当前结果中已有的本地设备档案分组，并提供“未分组”选项。
+- 分组筛选与发现状态、待复核和名称/IP/MAC 搜索组合；设备列表、匹配数量和 3D 节点同步更新。切换网卡、演示或历史视图时自动清空。
+- 保存、改名或清空设备档案分组后，筛选选项立即更新；不新增网络访问、数据库表或第三方依赖。
+- **验证**：Python 81 项测试通过；Chromium 覆盖真实结果与演示数据中的分组、未分组、组合筛选、档案变更、网卡切换重置、3D 联动和 375 px 布局；Windows 单文件构建与打包运行检查继续通过。详见 [docs/verification-1.6.0-2026-11-20.md](docs/verification-1.6.0-2026-11-20.md)。
