@@ -15,6 +15,7 @@ let stopped = false;
 let scanStarting = false;
 let selectedId = null;
 let query = '';
+let statusFilter = '';
 let pollTimer = null;
 let pollFailures = 0;
 let toastTimer = null;
@@ -50,7 +51,11 @@ function activeResult() { return demo ? demoResult : workspace?.replayResult || 
 function currentInterface() { return interfaces.find((item) => String(item.id) === interfaceId) || null; }
 function deviceName(device) { return device.profile?.alias || device.hostname || kindNames[device.kind] || '网络设备'; }
 function isScanning() { return !stopped && (scanStarting || realState.status === 'scanning'); }
-function deviceMatches(device) { return !query || [device.profile?.alias, device.profile?.notes, device.profile?.group, device.hostname, device.ip, device.mac, kindNames[device.kind], statusNames[device.status]].some((value) => String(value || '').toLocaleLowerCase().includes(query)); }
+function deviceMatches(device) {
+  if (statusFilter && device.status !== statusFilter) return false;
+  return !query || [device.profile?.alias, device.profile?.notes, device.profile?.group, device.hostname, device.ip, device.mac, kindNames[device.kind], statusNames[device.status]].some((value) => String(value || '').toLocaleLowerCase().includes(query));
+}
+function resetDeviceFilters() { statusFilter = ''; query = ''; ui['device-search'].value = ''; ui['device-status-filter'].value = ''; }
 function text(id, value) { ui[id].textContent = value; }
 function icon(name, className = 'icon') {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -179,9 +184,9 @@ function renderList(devices, allCount) {
     button.append(symbol, main, status, icon('arrow', 'icon device-row-chevron'));
     button.addEventListener('click', () => selectDevice(device.id)); li.append(button); ui['device-list'].append(li);
   }
-  text('device-count', String(allCount)); text('filter-info', query ? devices.length + ' / ' + allCount : '全部设备');
+  text('device-count', String(allCount)); text('filter-info', query || statusFilter ? devices.length + ' / ' + allCount : '全部设备');
   ui['list-empty'].hidden = devices.length > 0;
-  ui['list-empty'].querySelector('p').textContent = query ? '没有匹配的设备，试试其他关键词。' : booting ? '正在读取本机网络…' : isScanning() && !demo ? '正在发现，稍后显示设备' : '设备将在发现后显示';
+  ui['list-empty'].querySelector('p').textContent = query || statusFilter ? '当前筛选条件下没有匹配设备。' : booting ? '正在读取本机网络…' : isScanning() && !demo ? '正在发现，稍后显示设备' : '设备将在发现后显示';
 }
 function renderDetails(device, result) {
   ui['detail-empty'].hidden = Boolean(device); ui['detail-content'].hidden = !device;
@@ -211,7 +216,7 @@ function renderScene(result, visibleDevices) {
   if (!scene) return;
   const signature = JSON.stringify([demo, interfaceId, result?.scannedAt, result?.devices, result?.links]);
   if (signature !== sceneSignature) { scene.setDevices((result?.devices || []).map((device) => device.profile?.alias ? { ...device, displayName: device.profile.alias } : device), result?.links || []); sceneSignature = signature; }
-  scene.setSelected(selectedId); scene.setFilter(query ? new Set(visibleDevices.map((device) => device.id)) : null);
+  scene.setSelected(selectedId); scene.setFilter(query || statusFilter ? new Set(visibleDevices.map((device) => device.id)) : null);
 }
 function render() {
   const result = activeResult();
@@ -221,6 +226,7 @@ function render() {
   const scanning = isScanning();
   const historical = Boolean(workspace?.replayResult) && !demo;
   if (!devices.some((device) => device.id === selectedId)) selectedId = devices.find((device) => device.kind === 'gateway')?.id || devices.find((device) => device.kind === 'self')?.id || devices[0]?.id || null;
+  if ((query || statusFilter) && !visibleDevices.some((device) => device.id === selectedId)) selectedId = visibleDevices[0]?.id || null;
   const scope = result?.scope?.scanCidr || result?.interface?.scanCidr || (demo ? '192.168.1.0/24' : adapter?.scanCidr || adapter?.cidr);
   text('stat-total', result ? String(devices.length).padStart(2, '0') : '—');
   text('stat-online', result ? String(devices.filter((device) => device.status === 'online').length).padStart(2, '0') : '—');
@@ -256,7 +262,7 @@ function render() {
   ui['scene-empty'].hidden = !showEmpty;
   let emptyTitle = '等待发现你的网络'; let emptyDescription = '选择网络适配器，点击“发现设备”开始探索。';
   if (sceneError && devices.length) { emptyTitle = '当前环境无法显示三维空间'; emptyDescription = '设备数据已加载。你仍可通过设备列表查看详情和导出结果。'; }
-  else if (query && !visibleDevices.length && devices.length) { emptyTitle = '未找到匹配设备'; emptyDescription = '调整左侧搜索关键词，继续探索网络空间。'; }
+  else if ((query || statusFilter) && !visibleDevices.length && devices.length) { emptyTitle = query ? '未找到匹配设备' : '没有对应状态的设备'; emptyDescription = query ? '调整搜索关键词或状态筛选，继续探索网络空间。' : '更改左侧发现状态，查看其他设备。'; }
   else if (booting) { emptyTitle = '正在连接本机网络'; emptyDescription = '读取网络适配器后，将开始发现设备。'; }
   else if (!interfaceId && !demo) { emptyTitle = '没有可用的网络适配器'; emptyDescription = error || '请连接 Wi-Fi 或有线局域网，然后重新读取。'; }
   else if (error && !devices.length) { emptyTitle = '暂时无法发现设备'; emptyDescription = error; }
@@ -273,7 +279,7 @@ function render() {
 function setDemo(value) {
   if (value === demo) return;
   if (value) { lastRealSelection = selectedId; demoResult ||= makeDemoResult(); workspace?.leaveReplay(false); }
-  demo = value; query = ''; ui['device-search'].value = ''; selectedId = value ? null : lastRealSelection;
+  demo = value; resetDeviceFilters(); selectedId = value ? null : lastRealSelection;
   render();
 }
 
@@ -281,8 +287,9 @@ ui['demo-toggle'].addEventListener('click', () => setDemo(!demo));
 ui['leave-demo'].addEventListener('click', () => setDemo(false));
 async function retryDiscovery() { const refreshed = await initialize(); if (refreshed && interfaceId && !isScanning()) startScan(); }
 ui['scan-button'].addEventListener('click', () => realState.status === 'error' ? retryDiscovery() : startScan());
-ui['interface-select'].addEventListener('change', () => { workspace?.leaveReplay(false); interfaceId = ui['interface-select'].value; selectedId = null; query = ''; ui['device-search'].value = ''; if (realState.status === 'error') realState = { ...realState, status: 'idle', error: null }; render(); });
+ui['interface-select'].addEventListener('change', () => { workspace?.leaveReplay(false); interfaceId = ui['interface-select'].value; selectedId = null; resetDeviceFilters(); if (realState.status === 'error') realState = { ...realState, status: 'idle', error: null }; render(); });
 ui['device-search'].addEventListener('input', () => { query = ui['device-search'].value.trim().toLocaleLowerCase(); render(); });
+ui['device-status-filter'].addEventListener('change', () => { statusFilter = ui['device-status-filter'].value; render(); });
 ui['retry-button'].addEventListener('click', retryDiscovery);
 ui['rotate-button'].addEventListener('click', () => { autoRotate = !autoRotate; updateRotate(); });
 function updateRotate() { scene?.setAutoRotate(autoRotate); ui['rotate-button'].setAttribute('aria-pressed', String(autoRotate)); ui['rotate-button'].setAttribute('aria-label', autoRotate ? '暂停自动旋转' : '开启自动旋转'); ui['rotate-button'].title = autoRotate ? '暂停自动旋转' : '开启自动旋转'; }
@@ -313,8 +320,8 @@ workspace = createWorkspace({
   ui, api, rerender: render, showToast, activeResult, readState: () => realState, applyState,
   getLiveResult: () => realResults.get(interfaceId) || null, getInterfaceId: () => interfaceId,
   isDemo: () => demo, isStopped: () => stopped, selectedDevice: () => activeResult()?.devices.find((device) => device.id === selectedId),
-  enterReplay: () => { demo = false; selectedId = null; query = ''; ui['device-search'].value = ''; render(); },
-  leaveReplay: () => { selectedId = null; query = ''; ui['device-search'].value = ''; render(); },
+  enterReplay: () => { demo = false; selectedId = null; resetDeviceFilters(); render(); },
+  leaveReplay: () => { selectedId = null; resetDeviceFilters(); render(); },
   patchProfile: (networkId, deviceKey, profile) => { for (const result of realResults.values()) if (result.networkId === networkId) for (const device of result.devices) if (device.deviceKey === deviceKey) device.profile = { ...profile }; },
 });
 window.addEventListener('pagehide', () => { clearTimeout(pollTimer); workspace?.destroy(); scene?.destroy(); });

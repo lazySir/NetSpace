@@ -61,9 +61,26 @@ async function run() {
   await page.waitForTimeout(150);
   assert.equal(await page.locator('#device-list button').count(), 1, 'search should filter devices');
   await page.locator('#device-search').fill('');
+  await page.locator('#device-status-filter').selectOption('cached');
+  assert.equal(await page.locator('#device-list button').count(), 0, 'status filter should apply before demo is entered');
   await page.locator('#demo-toggle').click();
   await page.locator('#demo-banner').waitFor({ state: 'visible' });
   assert.ok(Number(await page.locator('#stat-total').innerText()) > 3);
+  assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'entering demo resets the previous network status filter');
+  const statusCases = [['online', 1], ['resolved', 8], ['cached', 2], ['unverified', 1]];
+  for (const [status, count] of statusCases) {
+    await page.locator('#device-status-filter').selectOption(status);
+    assert.equal(await page.locator('#device-list button').count(), count, status + ' filter should only show matching evidence');
+    assert.equal(await page.locator('#scene-labels .scene-node-label:not([hidden])').count(), count, status + ' filter should hide nonmatching topology nodes');
+    assert.equal((await page.locator('#filter-info').innerText()).trim(), count + ' / 12', status + ' filter should update the visible count');
+  }
+  await page.locator('#device-search').fill('iPhone');
+  assert.equal(await page.locator('#device-list button').count(), 0, 'search should compose with the cached status filter');
+  await page.locator('#device-status-filter').selectOption('resolved');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'search should compose with the resolved status filter');
+  await page.locator('#device-search').fill('');
+  await page.locator('#device-status-filter').selectOption('');
+  assert.equal(await page.locator('#device-list button').count(), 12, 'all status should restore every demo device');
   await page.screenshot({ path: path.join(output, 'netspace-demo.png'), fullPage: true });
   const downloadPromise = page.waitForEvent('download');
   await page.locator('#export-button').click();
@@ -74,7 +91,9 @@ async function run() {
   await page.locator('#leave-demo').click();
   await page.locator('#demo-banner').waitFor({ state: 'hidden' });
   assert.equal(Number(await page.locator('#stat-total').innerText()), 3);
+  await page.locator('#device-status-filter').selectOption('cached');
   await page.locator('#interface-select').selectOption('10');
+  assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'switching adapters resets the old status filter');
   await page.locator('#scan-button').click();
   await page.waitForFunction(() => document.querySelector('#stat-cidr').textContent.includes('192.168.60'));
   assert.equal(await page.locator('#device-list').innerText().then(x => x.includes('192.168.50.')), false, 'old adapter devices must not leak');

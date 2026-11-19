@@ -74,6 +74,7 @@
           <div id="devices-pane" role="tabpanel" aria-labelledby="tab-devices" class="device-tab-content">
           <div class="panel-heading"><h2 id="devices-title">设备列表 <span class="count-badge" id="device-count">0</span></h2><span class="micro-label" id="list-source">真实网络</span></div>
           <div class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="device-search">搜索设备名称、IP 或 MAC</label><input type="search" id="device-search" placeholder="搜索名称、IP 或 MAC" autocomplete="off"></div>
+          <div class="status-filter"><label class="sr-only" for="device-status-filter">按发现状态筛选设备</label><span class="filter-prompt" aria-hidden="true">FILTER / STATUS</span><select id="device-status-filter"><option value="">全部发现状态</option><option value="online">已确认在线</option><option value="resolved">已解析 · 在线未确认</option><option value="cached">系统缓存 · 在线未确认</option><option value="unverified">待确认</option></select></div>
           <div class="list-caption"><span>设备 / IP 地址</span><span id="filter-info">全部设备</span></div>
           <ul id="device-list" class="device-list" aria-label="已发现设备"></ul>
           <div id="list-empty" class="list-empty"><span class="empty-line"></span><p>设备将在发现后显示</p></div>

@@ -63,3 +63,9 @@ body:before{background:radial-gradient(ellipse at 46% -20%,#1a492b55,transparent
 .device-panel-bottom,.privacy-note,.scene-interaction-hint{color:#85a08a}
 .button:focus-visible,.compact-button:focus-visible,.icon-button:focus-visible,.text-button:focus-visible{outline-color:#81ffad}
 @media(prefers-reduced-motion:reduce){.scene-view:before,.scene-view:after{animation:none!important}}
+.status-filter{display:flex;align-items:center;gap:8px;margin:9px 15px 0;padding:6px 8px;border:1px solid #1a3823;border-radius:5px;background:#061009}
+.filter-prompt{flex-shrink:0;font:8px "Cascadia Code",Consolas,monospace;letter-spacing:.6px;color:#80ad88}
+.status-filter select{width:100%;min-width:0;height:30px;padding:0 7px;border:1px solid #24472d;border-radius:4px;background:#08130b;color:#c5e9ce;font-size:10px}
+.status-filter select:hover{border-color:#428052}
+.status-filter select:focus-visible{outline:2px solid #81ffad;outline-offset:2px}
+@media(max-width:760px){.status-filter{margin-top:9px;min-height:42px}.status-filter select{height:34px;font-size:11px}.filter-prompt{font-size:8px}}

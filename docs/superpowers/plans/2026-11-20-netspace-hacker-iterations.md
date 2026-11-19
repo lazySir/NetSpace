@@ -26,11 +26,11 @@
 
 Add one labelled native select with `all`, `online`, `resolved`, `cached`, and `unverified` options. Its predicate is exact: `all` accepts every record; other options match `device.status` exactly. Apply status before search, keep selection and detail semantics unchanged, and show visible/total counts whenever either filter is active. Reset filter state when returning to the full device view from demo/replay or changing adapter.
 
-- [ ] Extend the Playwright demo fixture check to assert each status filter, combined search/filter behavior, and restoration to all devices.
-- [ ] Run the new browser assertions first and confirm they fail because the control/behavior is absent.
-- [ ] Implement the labelled selector and exact status predicate; style its keyboard, hover and disabled states in the hacker theme.
-- [ ] Run browser recovery and smoke tests, Python unit tests and mobile overflow checks.
-- [ ] Add a dated 1.3.0 README entry; run `git diff --check`; commit and push `feat: filter devices by discovery evidence`.
+- [x] Extend the Playwright demo fixture check to assert each status filter, combined search/filter behavior, and restoration to all devices.
+- [x] Run the new browser assertions first and confirm they fail because the control/behavior is absent.
+- [x] Implement the labelled selector and exact status predicate; style its keyboard, hover and disabled states in the hacker theme.
+- [x] Run browser recovery and smoke tests, Python unit tests and mobile overflow checks.
+- [x] Add a dated 1.3.0 README entry; run `git diff --check`; commit and push `feat: filter devices by discovery evidence`.
 
 ### Iteration 3: Content Security Policy (1.3.1)
 

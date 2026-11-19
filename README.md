@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.2.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.3.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -175,3 +175,11 @@ Windows adapters / neighbor cache / native address resolution
 - 更新 README 演示截图，截图仅包含程序生成的虚构设备。
 - **验证**：Python 单元测试、Chromium 桌面/375px 界面检查通过；没有运行时错误或外部资源请求。
 - **安全审查**：本轮未发现新漏洞；完整安全强化计划在后续迭代记录中单列。
+
+### 1.3.0 — 设备发现状态筛选（2026-11-20）
+
+- 可分别查看已确认在线、已解析但在线状态未确认、系统缓存和待确认设备。
+- 状态筛选与名称/IP/MAC 搜索联动；设备列表、3D 节点和匹配数量同步更新。切换网卡、演示或历史视图时筛选自动清空。
+- 原有发现依据及在线状态说明不变；没有证据时不会把地址解析结果称为在线。
+- **验证**：新增 Playwright 检查覆盖四种状态、筛选与搜索组合、筛选数量和重置；Python 78 项回归及 Chromium 桌面/移动检查通过。
+- **安全审查**：只读代码审查没有确认新漏洞；无新网络请求或外部资源。
