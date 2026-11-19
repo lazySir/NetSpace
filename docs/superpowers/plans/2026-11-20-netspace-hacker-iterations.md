@@ -1,6 +1,6 @@
 # NetSpace Hacker Style and Security Iteration Plan
 
-> **For agentic workers:** Follow the three ordered iterations below. Each iteration ends with verification, a README update, a separate commit on `main`, and a push to `origin/main`.
+> **For agentic workers:** Follow the ordered iterations below. Each iteration ends with verification, a README update, a separate commit on `main`, and a push to `origin/main`.
 
 **Goal:** Give NetSpace a distinctive hacker-style Windows UI, add useful device filtering, and improve browser-side security without changing LAN discovery boundaries.
 
@@ -18,7 +18,7 @@
 - [x] Update the browser theme color and app version to 1.2.0.
 - [x] Run the existing browser smoke check against isolated demo fixtures; verify screenshot, no horizontal overflow at 375px, no external requests and no JS errors.
 - [x] Save the synthetic demo screenshot to `docs/images/netspace-demo.png`; update the README version, screenshot description and a dated 1.2.0 iteration entry.
-- [ ] Run Python tests and `git diff --check`; commit and push `feat: apply hacker console theme`.
+- [x] Run Python tests and `git diff --check`; commit and push `feat: apply hacker console theme`.
 
 ### Iteration 2: Device evidence filters (1.3.0)
 
@@ -43,3 +43,15 @@ Emit this policy from the single response path, using the verified SHA-256 hash 
 - [x] Run all Python tests and browser UI/recovery/upgrade checks; inspect Chromium console for CSP violations and verify the Three.js canvas loads without external requests.
 - [x] Add a dated 1.3.1 README entry describing the mitigation and residual risk accurately.
 - [x] Run `git diff --check`; commit and push `security: add restrictive content security policy`.
+
+### Iteration 4: Device review queue (1.4.0)
+
+**Files:** `web/app.js`, `web/index.html`, `web/style.css`, `tools/ui_smoke.cjs`, `tools/ui_upgrade.cjs`, `tools/packaged_smoke.py`, `README.md`, `docs/images/netspace-demo.png`, `docs/verification-1.4.0-2026-11-20.md`.
+
+Define a peer as needing review when it is not the local `self` record and its stored profile does not mark it `known` or `ignored`. Add an accessible checkbox beside discovery-status filtering. Compose it with the existing status selector and search, and propagate its result to visible counts, selected-device behavior, empty states, and 3D topology. Reset the checkbox when changing adapters, entering demo, or entering/leaving historical replay. Seed synthetic demo records with recognized and ignored examples so the review queue has a meaningful composition.
+
+- [x] Extend the browser smoke check first and confirm it fails when the review-queue control is absent.
+- [x] Implement the review predicate, checkbox and hacker-theme states; add demo fixtures with known/ignored profiles.
+- [x] Verify the combined review/status/search filter and the profile-save transition that removes a recognized record from the queue.
+- [x] Run all Python tests, browser smoke/recovery/upgrade checks, Windows build and packaged smoke; refresh and inspect the synthetic README screenshot.
+- [x] Add the dated README iteration and verification record; run `git diff --check`; commit and push `feat: add device review queue`.

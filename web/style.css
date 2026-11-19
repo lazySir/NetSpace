@@ -9,7 +9,7 @@
 @media(max-width:760px){.monitor-toolbar{padding:11px 12px;gap:9px;margin-bottom:16px}.monitor-title{width:100%;gap:9px;font-size:9px}.monitor-controls{width:100%;flex-wrap:wrap;gap:8px}.monitor-controls select{height:35px;flex:1;font-size:10px}.monitor-controls .compact-button{min-height:35px}#monitor-next{order:4;width:100%;font-size:9px}.monitor-title #monitor-status{margin-left:auto;font-size:9px}.workspace-tabs>button{min-height:42px;font-size:12px}.archive-controls{padding-top:13px}.archive-controls label{font-size:10px}.archive-controls select{height:39px;font-size:11px}.archive-pane{min-height:320px}.archive-heading h2{font-size:13px}.archive-help{font-size:11px}.event-list{max-height:350px}.event-name{font-size:11px}.event-header{font-size:10px}.event-address{font-size:10px}#history-scan{min-height:215px}.replay-banner{padding:12px;gap:8px;flex-wrap:wrap}.replay-banner p{font-size:10px}.replay-banner button{margin-left:26px;font-size:10px;min-height:28px}.detail-content{grid-template-columns:112px 1fr}.profile-form{column-gap:12px;padding-top:17px;gap:11px}.profile-heading h4{font-size:12px}.profile-form>label{font-size:10px}.profile-form input:not([type=checkbox]){height:37px;font-size:11px}.profile-form textarea{font-size:11px;min-height:55px}.profile-flags{font-size:11px;gap:20px}.profile-flags label{min-height:32px}.profile-save-row .compact-button{min-height:37px;font-size:11px}.profile-save-row>span{font-size:10px}.observation-times{display:grid;gap:4px;font-size:9px}.detail-content .detail-properties{padding-top:24px}.details-panel .panel-heading{margin:0 16px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
-/* NetSpace 1.2.0: terminal console palette */
+/* NetSpace 1.4.0: terminal console palette */
 :root{--bg:#050907;--surface:#09120c;--line:#1c3926;--text:#e5f7ea;--muted:#91a694;--accent:#60ff9d;--cyan:var(--accent);--mint:#96f7b9;--amber:#e3bf7a}
 body{background-color:var(--bg);background-image:radial-gradient(ellipse at 42% -22%,#12351f55,transparent 55%)}
 body:before{background:radial-gradient(ellipse at 46% -20%,#1a492b55,transparent 58%)}
@@ -65,7 +65,10 @@ body:before{background:radial-gradient(ellipse at 46% -20%,#1a492b55,transparent
 @media(prefers-reduced-motion:reduce){.scene-view:before,.scene-view:after{animation:none!important}}
 .status-filter{display:flex;align-items:center;gap:8px;margin:9px 15px 0;padding:6px 8px;border:1px solid #1a3823;border-radius:5px;background:#061009}
 .filter-prompt{flex-shrink:0;font:8px "Cascadia Code",Consolas,monospace;letter-spacing:.6px;color:#80ad88}
-.status-filter select{width:100%;min-width:0;height:30px;padding:0 7px;border:1px solid #24472d;border-radius:4px;background:#08130b;color:#c5e9ce;font-size:10px}
+.status-filter select{flex:1 1 auto;width:0;min-width:0;height:30px;padding:0 7px;border:1px solid #24472d;border-radius:4px;background:#08130b;color:#c5e9ce;font-size:10px}
 .status-filter select:hover{border-color:#428052}
 .status-filter select:focus-visible{outline:2px solid #81ffad;outline-offset:2px}
+.review-filter{display:flex;flex:0 0 auto;align-items:center;gap:5px;white-space:nowrap;color:#b7d7bf;font-size:10px;cursor:pointer}
+.review-filter input{width:14px;height:14px;margin:0;accent-color:#60ff9d}
+.review-filter:focus-within{outline:2px solid #81ffad;outline-offset:3px;border-radius:2px}
 @media(max-width:760px){.status-filter{margin-top:9px;min-height:42px}.status-filter select{height:34px;font-size:11px}.filter-prompt{font-size:8px}}

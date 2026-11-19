@@ -10,6 +10,14 @@ const interfaces = [
   { id: '9', alias: 'Ethernet', ip: '192.168.50.20', prefixLength: 24, gateway: '192.168.50.1', mac: '02:00:00:00:00:20', type: 'ethernet', cidr: '192.168.50.0/24', scanCidr: '192.168.50.0/24', scopeLimited: false },
   { id: '10', alias: 'Wi-Fi', ip: '192.168.60.20', prefixLength: 24, gateway: '192.168.60.1', mac: '02:00:00:00:00:21', type: 'wifi', cidr: '192.168.60.0/24', scanCidr: '192.168.60.0/24', scopeLimited: false },
 ];
+async function assertTopologyHonorsListFilter(page, label) {
+  const unexpected = await page.evaluate(() => {
+    const listed = new Set([...document.querySelectorAll('#device-list .device-row')].map(row => row.dataset.deviceId));
+    return [...document.querySelectorAll('#scene-labels .scene-node-label:not([hidden])')]
+      .map(node => node.dataset.deviceId).filter(id => !listed.has(id));
+  });
+  assert.deepEqual(unexpected, [], label + ' should hide every filtered-out topology node');
+}
 function resultFor(adapter, count = 3) {
   const prefix = adapter.ip.slice(0, adapter.ip.lastIndexOf('.') + 1);
   const devices = [
@@ -22,8 +30,9 @@ function resultFor(adapter, count = 3) {
   }
   return { interface: adapter, devices, links: devices.filter(x => x.id !== adapter.gateway).map(x => ({ source: adapter.gateway, target: x.id, kind: 'same-subnet', inferred: true })), warnings: [], scannedAt: '2026-11-19T10:20:30+08:00', durationMs: 19000, scope: { cidr: adapter.cidr, scanCidr: adapter.scanCidr, targetCount: 253, limited: false } };
 }
+let testBrowser = null;
 async function run() {
-  const browser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
+  const browser = testBrowser = await chromium.launch({ executablePath: 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, reducedMotion: 'reduce', acceptDownloads: true });
   const page = await context.newPage();
   const errors = [];
@@ -67,21 +76,42 @@ async function run() {
   await page.waitForTimeout(150);
   assert.equal(await page.locator('#device-list button').count(), 1, 'search should filter devices');
   await page.locator('#device-search').fill('');
+  assert.equal(await page.locator('#needs-review-filter').count(), 1, 'device panel should provide a review-queue control');
+  await page.locator('#needs-review-filter').check();
+  assert.equal(await page.locator('#device-list button').count(), 2, 'review queue should show unresolved peers and omit the local computer');
+  await assertTopologyHonorsListFilter(page, 'review queue');
+  await page.locator('#device-status-filter').selectOption('resolved');
+  assert.equal(await page.locator('#device-list button').count(), 2, 'review queue should compose with discovery status');
+  await page.locator('#needs-review-filter').uncheck();
+  await page.locator('#device-status-filter').selectOption('');
   await page.locator('#device-status-filter').selectOption('cached');
   assert.equal(await page.locator('#device-list button').count(), 0, 'status filter should apply before demo is entered');
   await page.locator('#demo-toggle').click();
   await page.locator('#demo-banner').waitFor({ state: 'visible' });
   assert.ok(Number(await page.locator('#stat-total').innerText()) > 3);
   assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'entering demo resets the previous network status filter');
+  assert.equal(await page.locator('#needs-review-filter').isChecked(), false, 'entering demo resets the review queue filter');
   const statusCases = [['online', 1], ['resolved', 8], ['cached', 2], ['unverified', 1]];
   for (const [status, count] of statusCases) {
     await page.locator('#device-status-filter').selectOption(status);
     assert.equal(await page.locator('#device-list button').count(), count, status + ' filter should only show matching evidence');
-    assert.equal(await page.locator('#scene-labels .scene-node-label:not([hidden])').count(), count, status + ' filter should hide nonmatching topology nodes');
+    await assertTopologyHonorsListFilter(page, status + ' filter');
     assert.equal((await page.locator('#filter-info').innerText()).trim(), count + ' / 12', status + ' filter should update the visible count');
   }
+  await page.locator('#device-status-filter').selectOption('');
+  await page.locator('#needs-review-filter').check();
+  assert.equal(await page.locator('#device-list button').count(), 9, 'review queue should omit the local computer, recognized and ignored demo devices');
+  await assertTopologyHonorsListFilter(page, 'demo review queue');
+  assert.equal((await page.locator('#filter-info').innerText()).trim(), '9 / 12', 'review queue count should include every active filter');
+  await page.locator('#device-status-filter').selectOption('cached');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'ignored cached demo device should stay out of the review queue');
   await page.locator('#device-search').fill('iPhone');
-  assert.equal(await page.locator('#device-list button').count(), 0, 'search should compose with the cached status filter');
+  assert.equal(await page.locator('#device-list button').count(), 0, 'search should compose with review and status filters');
+  await page.locator('#device-search').fill('');
+  await page.locator('#device-status-filter').selectOption('');
+  await page.locator('#needs-review-filter').uncheck();
+  await page.locator('#device-search').fill('iPhone');
+  assert.equal(await page.locator('#device-list button').count(), 1, 'clearing filters should restore matching search results');
   await page.locator('#device-status-filter').selectOption('resolved');
   assert.equal(await page.locator('#device-list button').count(), 1, 'search should compose with the resolved status filter');
   await page.locator('#device-search').fill('');
@@ -98,7 +128,9 @@ async function run() {
   await page.locator('#demo-banner').waitFor({ state: 'hidden' });
   assert.equal(Number(await page.locator('#stat-total').innerText()), 3);
   await page.locator('#device-status-filter').selectOption('cached');
+  await page.locator('#needs-review-filter').check();
   await page.locator('#interface-select').selectOption('10');
+  assert.equal(await page.locator('#needs-review-filter').isChecked(), false, 'switching adapters resets the review queue');
   assert.equal(await page.locator('#device-status-filter').inputValue(), '', 'switching adapters resets the old status filter');
   await page.locator('#scan-button').click();
   await page.waitForFunction(() => document.querySelector('#stat-cidr').textContent.includes('192.168.60'));
@@ -112,7 +144,8 @@ async function run() {
   assert.deepEqual(errors, [], 'browser must have no JavaScript runtime errors');
   assert.deepEqual(cspViolations, [], 'browser must report no CSP violations while modules and scene load');
   assert.deepEqual(external, [], 'app must not require any external resources');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'node selection', 'search', 'demo isolation', 'marked export', 'adapter switching', 'camera controls', '375px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'marked export', 'adapter switching', 'camera controls', '375px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
   await browser.close();
+  testBrowser = null;
 }
-run().catch(error => { console.error(error); process.exitCode = 1; });
+run().catch(async error => { console.error(error); if (testBrowser) { try { await testBrowser.close(); } catch {} } process.exitCode = 1; });

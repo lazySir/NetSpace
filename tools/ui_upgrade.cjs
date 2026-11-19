@@ -72,6 +72,9 @@ async function run() {
       return route.fulfill({ json });
     });
     await page.goto(base, { waitUntil: 'networkidle' });
+    await page.locator('#needs-review-filter').check();
+    assert.equal(await page.locator('#device-list button').count(), 1, 'review queue should contain the unreviewed gateway while excluding the local computer');
+    await page.locator('#needs-review-filter').uncheck();
     await page.locator('#device-list button').first().click();
     await page.locator('#profile-alias').waitFor({ state: 'visible', timeout: 1800 });
     assert.equal(await page.locator('#monitor-interval').count(), 1, 'monitor toolbar must exist');
@@ -81,6 +84,9 @@ async function run() {
     await page.locator('#profile-known').check();
     await page.locator('#profile-save').click();
     await page.waitForFunction(() => document.querySelector('#profile-status').textContent.includes('已保存'));
+    await page.locator('#needs-review-filter').check();
+    assert.equal(await page.locator('#device-list button').count(), 0, 'marking the gateway as known should remove it from the review queue');
+    await page.locator('#needs-review-filter').uncheck();
     assert.ok((await page.locator('#device-list').innerText()).includes('<img src=x onerror=alert(1)>我的路由器'));
     assert.equal(await page.locator('#device-list img').count(), 0, 'alias must render as safe text');
     assert.equal(await page.locator('#detail-hostname').innerText(), 'ROUTER-FACTUAL', 'alias must not replace factual hostname');
