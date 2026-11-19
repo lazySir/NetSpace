@@ -1,11 +1,15 @@
 """NetSpace: a loopback-only Windows LAN map application."""
 import argparse
+import base64
 import copy
+import hashlib
+from functools import lru_cache
 import json
 import logging
 import mimetypes
 import os
 from pathlib import Path
+import re
 import socket
 import sys
 import threading
@@ -20,10 +24,32 @@ from monitoring import MonitorController
 from network_store import NetworkStore
 
 
-VERSION = '1.3.0'
+VERSION = '1.3.1'
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
 LOGGER = logging.getLogger('netspace')
+
+
+@lru_cache(maxsize=1)
+def content_security_policy():
+    """Restrict browser capabilities while allowing the exact static import map."""
+    document = (WEB_ROOT / 'index.html').read_bytes()
+    import_maps = re.findall(rb'<script type="importmap">(.*?)</script>', document, re.DOTALL)
+    if len(import_maps) != 1:
+        raise RuntimeError('NetSpace must define exactly one static import map')
+    digest = base64.b64encode(hashlib.sha256(import_maps[0]).digest()).decode('ascii')
+    return (
+        "default-src 'self'; "
+        "script-src 'self' 'sha256-{}'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "font-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ).format(digest)
 
 
 class ScanState:
@@ -191,7 +217,7 @@ class NetSpaceServer(ThreadingHTTPServer):
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    server_version = 'NetSpace/1.1'
+    server_version = 'NetSpace/' + VERSION
 
     def log_message(self, format_string, *args):
         LOGGER.debug(format_string, *args)
@@ -205,6 +231,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Security-Policy', content_security_policy())
         self.send_header('Connection', 'close')
         self.end_headers()
         try:

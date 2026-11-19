@@ -1,5 +1,9 @@
 import importlib
+import base64
+import hashlib
 import json
+from pathlib import Path
+import re
 import threading
 import time
 import unittest
@@ -98,6 +102,30 @@ class LocalServerTests(unittest.TestCase):
     def test_static_resources_cannot_escape_web_root(self):
         self.assertEqual(self.request('/%2e%2e/app.py')[0], 404)
         self.assertEqual(self.request('/api/not-real')[0], 404)
+
+    def test_content_security_policy_covers_api_and_import_map(self):
+        page = (Path(self.app.WEB_ROOT) / 'index.html').read_bytes()
+        import_maps = re.findall(rb'<script type="importmap">(.*?)</script>', page, re.DOTALL)
+        self.assertEqual(len(import_maps), 1, 'page must have one stable import map for the CSP hash')
+        import_hash = "'sha256-{}'".format(base64.b64encode(hashlib.sha256(import_maps[0]).digest()).decode('ascii'))
+        for path in ('/api/health', '/', '/app.js', '/style.css', '/not-found'):
+            request = urllib.request.Request(self.base + path)
+            try:
+                response = urllib.request.urlopen(request, timeout=3)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                policy = response.headers.get('Content-Security-Policy')
+            self.assertIsNotNone(policy, path + ' response must send a content security policy')
+            self.assertIn(import_hash, policy)
+            self.assertIn("default-src 'self'", policy)
+            self.assertIn("connect-src 'self'", policy)
+            self.assertIn("script-src 'self'", policy)
+            self.assertNotIn("'unsafe-inline'", policy.split('script-src', 1)[1].split(';', 1)[0])
+            self.assertIn("object-src 'none'", policy)
+            self.assertIn("base-uri 'none'", policy)
+            self.assertIn("form-action 'self'", policy)
+            self.assertIn("frame-ancestors 'none'", policy)
 
     def test_server_cannot_bind_to_external_interface(self):
         with self.assertRaises(ValueError):

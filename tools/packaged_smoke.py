@@ -29,6 +29,11 @@ def main():
                 return json.loads(body.decode('utf-8'))
             return body
 
+    def response_headers(path):
+        req = urllib.request.Request(base + path)
+        with opener.open(req, timeout=3) as response:
+            return response.headers
+
     try:
         request('/api/health', timeout=1)
     except Exception:
@@ -55,7 +60,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.3.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.3.1'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -80,6 +85,9 @@ def main():
                          '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js'):
             bundled = request(resource)
             assert len(bundled) > 100, resource
+            policy = response_headers(resource).get('Content-Security-Policy', '')
+            assert "default-src 'self'" in policy, resource + ' must have CSP'
+            assert "object-src 'none'" in policy, resource + ' must block object content'
             source_path = Path('web') / (resource.lstrip('/') or 'index.html')
             assert bundled == source_path.read_bytes(), 'Packaged resource differs from source: ' + resource
         checks.append('all bundled page and 3D resources')

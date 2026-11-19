@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.3.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.3.1</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -132,7 +132,7 @@ Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：78 项 Python 测试通过；Windows 可执行文件验证通过。详细记录见 [`docs/verification-1.1-2026-11-19.md`](docs/verification-1.1-2026-11-19.md)。
+**当前验证记录**：79 项 Python 测试通过；Windows 可执行文件、浏览器主流程、故障恢复与界面升级验证通过。详细记录见 [`docs/verification-1.3.1-2026-11-20.md`](docs/verification-1.3.1-2026-11-20.md)。
 
 ## 架构速览
 
@@ -183,3 +183,10 @@ Windows adapters / neighbor cache / native address resolution
 - 原有发现依据及在线状态说明不变；没有证据时不会把地址解析结果称为在线。
 - **验证**：新增 Playwright 检查覆盖四种状态、筛选与搜索组合、筛选数量和重置；Python 78 项回归及 Chromium 桌面/移动检查通过。
 - **安全审查**：只读代码审查没有确认新漏洞；无新网络请求或外部资源。
+
+### 1.3.1 — 浏览器内容安全策略（2026-11-20）
+
+- 为页面、静态资源、接口和错误响应统一添加内容安全策略：仅允许同源脚本与网络请求，允许当前静态导入映射的精确 SHA-256 哈希，禁止对象嵌入与页面被框架加载。
+- 为现有 3D 标签定位保留行内样式权限；脚本仍不允许任意行内代码。此策略是纵深防御，不能替代输入安全处理，也无法防止本机上已获准访问用户数据的恶意程序。
+- **验证**：79 项 Python 回归通过，覆盖 HTML、接口、静态资源及 404 响应头；Chromium 检查确认 CSP 无违规、Three.js 场景正常且无外部请求；Windows 单文件打包及原生发现、数据库重启持久化、定时发现和退出流程均通过。详见 [`docs/verification-1.3.1-2026-11-20.md`](docs/verification-1.3.1-2026-11-20.md)。
+- **安全审查**：只读代码审查未发现当前页面与策略之间的明显冲突；仍需以浏览器及打包测试确认运行时行为，不将结果表述为“无漏洞”。

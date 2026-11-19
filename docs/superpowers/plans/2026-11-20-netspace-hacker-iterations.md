@@ -38,8 +38,8 @@ Add one labelled native select with `all`, `online`, `resolved`, `cached`, and `
 
 Emit this policy from the single response path, using the verified SHA-256 hash of the static import map instead of allowing arbitrary inline scripts: `default-src 'self'; script-src 'self' <import-map-hash>; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'`. Keep `unsafe-inline` limited to styles because current Three.js scene labels use runtime style properties.
 
-- [ ] Add API and static-response tests asserting CSP, same-origin restrictions and `object-src 'none'`; confirm the new assertions fail against the current server.
-- [ ] Add the CSP header, calculated from the exact import-map payload, and keep it stable with an assertion.
-- [ ] Run all Python tests and browser UI/recovery checks; inspect Chromium console for CSP violations and verify the Three.js canvas loads without external requests.
-- [ ] Add a dated 1.3.1 README entry describing the mitigation and residual risk accurately.
-- [ ] Run `git diff --check`; commit and push `security: add restrictive content security policy`.
+- [x] Add API, static-resource and 404-response tests asserting CSP, same-origin restrictions, exact import-map hash and `object-src 'none'`; new assertions failed before adding the policy.
+- [x] Add the CSP header, calculated from the exact import-map payload, and keep it stable with an assertion.
+- [x] Run all Python tests and browser UI/recovery/upgrade checks; inspect Chromium console for CSP violations and verify the Three.js canvas loads without external requests.
+- [x] Add a dated 1.3.1 README entry describing the mitigation and residual risk accurately.
+- [x] Run `git diff --check`; commit and push `security: add restrictive content security policy`.

@@ -27,8 +27,10 @@ async function run() {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 }, reducedMotion: 'reduce', acceptDownloads: true });
   const page = await context.newPage();
   const errors = [];
+  const cspViolations = [];
   const external = [];
   page.on('pageerror', e => errors.push(e.message));
+  page.on('console', message => { if (/content security policy/i.test(message.text())) cspViolations.push(message.text()); });
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith(base + '/')) external.push(request.url()); });
   let current = { status: 'idle', progress: { phase: 'idle', completed: 0, total: 0, message: '准备就绪' }, result: null, error: null };
   await page.route('**/api/interfaces', route => route.fulfill({ json: { interfaces, error: null } }));
@@ -38,7 +40,11 @@ async function run() {
     current = { status: 'complete', progress: { phase: 'complete', completed: 253, total: 253, message: '设备发现完成' }, result: resultFor(adapter), error: null };
     await route.fulfill({ status: 202, json: current });
   });
-  await page.goto(base, { waitUntil: 'networkidle' });
+  const documentResponse = await page.goto(base, { waitUntil: 'networkidle' });
+  const policy = documentResponse.headers()['content-security-policy'] || '';
+  assert.match(policy, /default-src 'self'/, 'document response should enforce its CSP');
+  assert.match(policy, /object-src 'none'/, 'document response should block embedded objects');
+  assert.match(policy, /frame-ancestors 'none'/, 'document response should prevent framing');
   const theme = await page.evaluate(() => ({
     background: getComputedStyle(document.documentElement).getPropertyValue('--bg').trim(),
     accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
@@ -104,8 +110,9 @@ async function run() {
   await page.screenshot({ path: path.join(output, 'netspace-mobile.png'), fullPage: true });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'mobile layout must not overflow horizontally');
   assert.deepEqual(errors, [], 'browser must have no JavaScript runtime errors');
+  assert.deepEqual(cspViolations, [], 'browser must report no CSP violations while modules and scene load');
   assert.deepEqual(external, [], 'app must not require any external resources');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['real layout', 'node selection', 'search', 'demo isolation', 'marked export', 'adapter switching', 'camera controls', '375px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'node selection', 'search', 'demo isolation', 'marked export', 'adapter switching', 'camera controls', '375px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
   await browser.close();
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
