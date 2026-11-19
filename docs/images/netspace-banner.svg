@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">NETSPACE local network visualizer</title>
+  <desc id="desc">Dark terminal-inspired banner with neon green network nodes and links.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#050b09"/><stop offset="1" stop-color="#071714"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#00ff88" stop-opacity=".25"/><stop offset="1" stop-color="#00ff88" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse"><path d="M32 0H0V32" fill="none" stroke="#1b3b2e" stroke-opacity=".34" stroke-width="1"/></pattern>
+    <filter id="soft" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+  <rect width="1200" height="360" rx="20" fill="url(#grid)"/>
+  <circle cx="930" cy="180" r="250" fill="url(#glow)"/>
+  <g fill="none" stroke="#31e98b" stroke-opacity=".42" stroke-width="1.4">
+    <path d="M790 98 938 151 1084 88M790 98 846 238 938 151M846 238 1024 267 938 151M1024 267 1084 88M938 151 1140 190"/>
+    <circle cx="938" cy="151" r="76" stroke-opacity=".28"/><circle cx="938" cy="151" r="114" stroke-opacity=".18"/>
+  </g>
+  <g filter="url(#soft)" fill="#8dffc0" stroke="#23e980" stroke-width="2">
+    <circle cx="938" cy="151" r="12"/><circle cx="790" cy="98" r="7"/><circle cx="846" cy="238" r="7"/><circle cx="1024" cy="267" r="7"/><circle cx="1084" cy="88" r="7"/><circle cx="1140" cy="190" r="6"/>
+  </g>
+  <g font-family="Consolas, 'Courier New', monospace">
+    <text x="64" y="72" fill="#4af79b" font-size="15" letter-spacing="3">LOCAL NETWORK / VISUALIZER</text>
+    <text x="60" y="164" fill="#d9ffe9" font-size="66" font-weight="700" letter-spacing="2">NETSPACE</text>
+    <text x="64" y="205" fill="#70bd91" font-size="20">Map your LAN. Explore the topology.</text>
+    <text x="64" y="276" fill="#46e98c" font-size="16">&gt; DISCOVERY: LOCAL ONLY</text>
+    <text x="64" y="304" fill="#46e98c" font-size="16">&gt; VISUALIZATION: SIMULATED 3D</text>
+    <text x="64" y="332" fill="#46e98c" font-size="16">&gt; STATUS: READY_</text>
+    <text x="792" y="324" fill="#4e9970" font-size="12" letter-spacing="2">NODES // LINKS // LOCAL</text>
+  </g>
+  <rect x="1" y="1" width="1198" height="358" rx="20" fill="none" stroke="#286443" stroke-opacity=".68"/>
+</svg>
