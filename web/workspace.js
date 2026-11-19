@@ -97,6 +97,7 @@ export function createWorkspace(options) {
     const signature = JSON.stringify([networkId, scans]);
     if (signature !== historySignature) {
       historySignature = signature; ui['history-scan'].replaceChildren();
+      let comparisonSelectionPruned = false;
       const placeholder = document.createElement('option'); placeholder.value = ''; placeholder.textContent = scans.length ? '选择发现记录，查看当时设备' : '该网络尚无历史记录'; ui['history-scan'].append(placeholder);
       for (const scan of scans) {
         const option = document.createElement('option'); option.value = String(scan.id);
@@ -113,10 +114,13 @@ export function createWorkspace(options) {
         }
         const validPrevious = scans.some(scan => String(scan.id) === previous);
         const fallback = id === 'history-compare-source' ? (scans.length > 1 ? String(scans[1].id) : '') : (scans.length ? String(scans[0].id) : '');
-        if (id === 'history-compare-source') comparisonSourceId = validPrevious ? previous : fallback;
-        else comparisonTargetId = validPrevious ? previous : fallback;
+        const nextSelection = validPrevious ? previous : fallback;
+        if (previous && previous !== nextSelection) comparisonSelectionPruned = true;
+        if (id === 'history-compare-source') comparisonSourceId = nextSelection;
+        else comparisonTargetId = nextSelection;
         select.value = id === 'history-compare-source' ? comparisonSourceId : comparisonTargetId;
       }
+      if (comparisonSelectionPruned) resetComparison(false);
     }
     ui['history-scan'].disabled = !scans.length || options.isStopped() || loadingReplay || options.isDemo();
     ui['history-scan'].value = replay && replay.networkId === networkId ? String(replay.scanId) : '';

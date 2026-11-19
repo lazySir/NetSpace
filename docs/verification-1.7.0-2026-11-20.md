@@ -12,6 +12,8 @@ Date: 2026-11-20
 - `python tools/packaged_smoke.py`: validates the bundled runtime, native network discovery, history/profile persistence across restarts, scheduled discovery and clean shutdown.
 - `python -m py_compile app.py tools/packaged_smoke.py`, `node --check web/app.js`, `node --check web/workspace.js`, `node --check tools/ui_upgrade.cjs`, and `git diff --check`: passed.
 
+The browser regression also removes a selected snapshot from retained history and verifies that the selection falls back while the stale comparison summary and detail rows clear.
+
 ## Scope and interpretation
 
 Comparison reads two stored snapshots for the currently selected network, validates both network and scan identities, and matches devices by the stable local `deviceKey`. It classifies records as added, missing from the later snapshot, IP changed, or unchanged. A device missing from a later snapshot is not confirmed offline. No new discovery probes, database tables, external requests, or real-world location claims are added. The history comparison screenshot uses synthetic browser fixtures, not a real network scan.

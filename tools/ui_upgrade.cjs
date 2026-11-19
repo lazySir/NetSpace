@@ -1,4 +1,4 @@
-// Isolated browser fixtures verify the 1.1 workflow without discovering the LAN.
+// Isolated browser fixtures verify local history and device workflows without discovering the LAN.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -52,7 +52,7 @@ async function run() {
     comparisonAfter.devices = [comparisonAfter.devices[0], { ...comparisonAfter.devices[1], id: '192.168.50.21', ip: '192.168.50.21' }, { id: '192.168.50.45', deviceKey: 'nas', ip: '192.168.50.45', hostname: 'LAB-NAS', kind: 'device', mac: '02:00:00:00:00:45', status: 'resolved', profile: blank(), evidence: ['arp'] }];
     const comparisonSame = { ...comparisonAfter, scanId: 7, scannedAt: '2026-11-19T03:00:00Z' };
     const comparisonForeign = snapshot(adapters[1], 'network-B', 6);
-    let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b];
+    let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b], availableHistoryIds = null;
     let releaseEvents = null, releaseMonitor = null, releaseOldState = null, releaseComparison = null, holdNextEvents = false, holdNextMonitor = false, holdNextState = false, delayComparison = false, crossNetworkComparison = false;
     let monitor = { enabled: false, interfaceId: null, intervalSeconds: 300, nextScanAt: null, error: null, notificationsEnabled: true };
     const events = [{ id: 11, networkId: 'network-A', scanId: 2, deviceKey: 'workstation', kind: 'new', ip: a.interface.ip, previousIp: null, name: '<svg onload=alert(1)>新设备', occurredAt: a.scannedAt, read: false, notify: true }];
@@ -72,7 +72,7 @@ async function run() {
         }
       }
       else if (url.pathname === '/api/networks') json = { networks: networkCatalogue.map(result => ({ id: result.networkId, label: result.interface.alias, cidr: result.interface.cidr, gateway: result.interface.gateway, lastSeen: result.scannedAt, deviceCount: 2 })) };
-      else if (url.pathname === '/api/history') { const networkId = url.searchParams.get('networkId') || 'network-A'; json = { scans: (networkId === 'network-A' ? [a, old, comparisonBefore, comparisonAfter, comparisonSame] : [b]).map(result => ({ id: result.scanId, networkId, scannedAt: result.scannedAt, deviceCount: result.devices.length, changeCount: 1, durationMs: 120 })) }; }
+      else if (url.pathname === '/api/history') { const networkId = url.searchParams.get('networkId') || 'network-A'; json = { scans: (networkId === 'network-A' ? [a, old, comparisonBefore, comparisonAfter, comparisonSame] : [b]).filter(result => !availableHistoryIds || availableHistoryIds.has(result.scanId)).map(result => ({ id: result.scanId, networkId, scannedAt: result.scannedAt, deviceCount: result.devices.length, changeCount: 1, durationMs: 120 })) }; }
       else if (url.pathname === '/api/history/1') json = { result: old };
       else if (url.pathname === '/api/history/2') json = { result: a };
       else if (url.pathname === '/api/history/3') json = { result: b };
@@ -253,6 +253,12 @@ async function run() {
     assert.equal(await page.locator('#history-comparison-list [data-change-kind="missing"]').count(), 1);
     assert.equal(await page.locator('#history-comparison-list img').count(), 0, 'untrusted snapshot names must render as plain text');
     assert.ok((await page.locator('#history-comparison-list').innerText()).includes('LAB-NAS'));
+    availableHistoryIds = new Set([1, 2, 5, 7]);
+    await page.waitForFunction(() => !document.querySelector('#history-compare-source option[value="4"]'), null, { timeout: 7000 });
+    assert.equal(await page.locator('#history-comparison-list li').count(), 0, 'pruning a selected snapshot must clear the result for the prior pair');
+    assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'pruning must replace the stale comparison summary');
+    availableHistoryIds = null;
+    await page.waitForFunction(() => document.querySelector('#history-compare-source option[value="4"]'), null, { timeout: 7000 });
     comparisonAfter.devices[2].hostname = '<img src=x onerror=alert(1)> NAS';
     await page.locator('#history-compare-button').click();
     await page.waitForFunction(() => document.querySelector('#history-comparison-list').textContent.includes('<img src=x onerror=alert(1)> NAS'));
