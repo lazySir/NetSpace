@@ -1,6 +1,7 @@
 import { deviceIdentity } from '/identity.js';
 
 const FORMULA_PREFIX = /^[\s\0\uFEFF\u200B-\u200F\u202A-\u202E\u2060]*[=+\-@＝＋－＠]/u;
+const EVENT_LABELS = { new: '新设备', returned: '再次发现', not_seen: '本次未见', ip_changed: 'IP 已变化' };
 
 function cell(value) {
   let text = value == null ? '' : String(value);
@@ -45,5 +46,18 @@ export function buildHistoryComparisonCsv(comparison, metadata) {
   for (const device of comparison.added) append('新增', device, '', device.ip, '', status(device));
   for (const item of comparison.changed) append('IP 变化', item.after, item.before.ip, item.after.ip, status(item.before), status(item.after));
   for (const device of comparison.missing) append('本次未见', device, device.ip, '', status(device), '', '本次未见不代表已确认离线');
+  return '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
+}
+
+export function buildNetworkEventsCsv(events, network, metadata) {
+  const headers = ['来源', '事件编号', '导出时间', '事件时间', '变化类型', '设备名称', '之前 IP', '当前 IP', '网络范围', '说明'];
+  const rows = [headers, ...events.map(event => [
+    '本地网络变化记录', event.id, metadata.exportedAt, event.occurredAt,
+    EVENT_LABELS[event.kind] || '发现记录', event.name || '网络设备',
+    event.kind === 'ip_changed' ? event.previousIp : event.kind === 'not_seen' ? event.ip : '',
+    event.kind === 'not_seen' ? '' : event.ip,
+    network?.cidr || network?.label || '',
+    event.kind === 'not_seen' ? '本次未见不代表已确认离线' : '',
+  ])];
   return '\uFEFF' + rows.map(row => row.map(cell).join(',')).join('\r\n') + '\r\n';
 }

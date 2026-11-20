@@ -61,6 +61,9 @@ class LocalServerTests(unittest.TestCase):
             return response.status, json.loads(body.decode('utf-8')) if 'application/json' in content_type else body
 
     def test_interfaces_and_initial_state(self):
+        status, health = self.request('/api/health')
+        self.assertEqual(status, 200)
+        self.assertEqual(health['version'], '1.11.0')
         status, body = self.request('/api/interfaces')
         self.assertEqual(status, 200)
         self.assertEqual(body['interfaces'][0]['id'], '7')

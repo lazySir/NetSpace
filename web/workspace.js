@@ -1,4 +1,4 @@
-import { buildHistoryComparisonCsv } from '/csv.js';
+import { buildHistoryComparisonCsv, buildNetworkEventsCsv } from '/csv.js';
 import { deviceIdentity } from '/identity.js';
 const EMPTY_PROFILE = { alias: '', notes: '', group: '', known: false, ignored: false };
 const EVENT_LABELS = { new: '新设备', returned: '再次发现', not_seen: '本次未见', ip_changed: 'IP 已变化' };
@@ -203,6 +203,7 @@ export function createWorkspace(options) {
     ui['unread-count'].classList.toggle('has-unread', unreadCount > 0);
     ui['unread-count'].setAttribute('aria-label', unreadCount + ' 条未读提醒');
     ui['events-read'].disabled = unreadCount <= 0 || readonly() || busy;
+    ui['events-csv-button'].disabled = !networkId || !events.some(event => event.networkId === networkId) || readonly() || busy;
     const signature = JSON.stringify([networkId, events]);
     if (signature !== eventSignature) {
       eventSignature = signature; ui['event-list'].replaceChildren();
@@ -217,6 +218,19 @@ export function createWorkspace(options) {
       }
     }
     ui['events-empty'].hidden = events.length > 0;
+  }
+  function exportNetworkEvents() {
+    if (!networkId || readonly()) return;
+    const selectedEvents = events.filter(event => event.networkId === networkId);
+    if (!selectedEvents.length) return;
+    const network = networks.find(item => item.id === networkId);
+    const exportedAt = new Date().toISOString();
+    const csv = buildNetworkEventsCsv(selectedEvents, network, { exportedAt });
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const anchor = document.createElement('a'); anchor.href = url;
+    anchor.download = 'netspace-EVENTS-' + exportedAt.replace(/[:.]/g, '-') + '.csv';
+    document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('已导出当前网络最近 ' + selectedEvents.length + ' 条变化记录');
   }
   function renderProfile(result, device) {
     if (!device) { profileKey = ''; return; }
@@ -388,6 +402,7 @@ export function createWorkspace(options) {
     catch (error) { archiveError = '未能标为已读：' + error.message; }
     finally { busy = false; rerender(); }
   });
+  ui['events-csv-button'].addEventListener('click', exportNetworkEvents);
   return {
     get replayResult() { return replay; }, render, initialize: refresh, leaveReplay,
     observeState(state) {

@@ -84,7 +84,13 @@ async function run() {
     let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b], availableHistoryIds = null;
     let releaseEvents = null, releaseMonitor = null, releaseOldState = null, releaseComparison = null, holdNextEvents = false, holdNextMonitor = false, holdNextState = false, delayComparison = false, crossNetworkComparison = false;
     let monitor = { enabled: false, interfaceId: null, intervalSeconds: 300, nextScanAt: null, error: null, notificationsEnabled: true };
-    const events = [{ id: 11, networkId: 'network-A', scanId: 2, deviceKey: 'workstation', kind: 'new', ip: a.interface.ip, previousIp: null, name: '<svg onload=alert(1)>新设备', occurredAt: a.scannedAt, read: false, notify: true }];
+    const events = [
+      { id: 11, networkId: 'network-A', scanId: 2, deviceKey: 'workstation', kind: 'new', ip: a.interface.ip, previousIp: null, name: '工作站', occurredAt: a.scannedAt, read: false, notify: true },
+      { id: 10, networkId: 'network-A', scanId: 2, deviceKey: 'gateway', kind: 'returned', ip: a.interface.gateway, previousIp: null, name: '路由器', occurredAt: a.scannedAt, read: true, notify: false },
+      { id: 9, networkId: 'network-A', scanId: 2, deviceKey: 'printer', kind: 'ip_changed', ip: '192.168.50.31', previousIp: '192.168.50.30', name: '打印机', occurredAt: a.scannedAt, read: true, notify: false },
+      { id: 8, networkId: 'network-A', scanId: 2, deviceKey: 'camera', kind: 'not_seen', ip: '192.168.50.32', previousIp: null, name: '摄像头', occurredAt: a.scannedAt, read: true, notify: false },
+      { id: 1002, networkId: 'network-B', scanId: 3, deviceKey: 'foreign-device', kind: 'new', ip: '192.168.60.45', previousIp: null, name: '其他网络设备', occurredAt: b.scannedAt, read: false, notify: true },
+    ];
     await page.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url()), body = req.method() === 'POST' ? req.postDataJSON() : null;
       if (url.pathname === '/api/history/1' && delayHistory) await new Promise(resolve => setTimeout(resolve, 900));
@@ -139,6 +145,11 @@ async function run() {
     await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
     await page.evaluate(() => { document.querySelector('#toast').hidden = true; document.activeElement.blur(); window.scrollTo(0, 0); });
     await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-history-comparison.png'), fullPage: true });
+    events[0].name = '工作站';
+    await page.locator('#tab-events').click();
+    await page.waitForFunction(() => document.querySelector('#event-list').textContent.includes('工作站') && !document.querySelector('#events-csv-button').disabled);
+    await page.evaluate(() => { document.querySelector('#toast').hidden = true; document.activeElement.blur(); window.scrollTo(0, 0); });
+    await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-events-export.png'), fullPage: true });
     await page.locator('#tab-devices').click();
     assert.equal(await page.evaluate(() => window.notificationPermissionRequests), 0, 'page load must not request desktop notification permission');
     await page.locator('#desktop-notifications-toggle').waitFor();
@@ -223,8 +234,37 @@ async function run() {
     failSave = false;
     await page.locator('#tab-events').click();
     await page.locator('#event-list').filter({ hasText: '新设备' }).waitFor();
-    assert.equal(await page.locator('#event-list svg').count(), 0, 'event name must render as safe text');
     assert.equal(await page.locator('#unread-count').innerText(), '1');
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), false, 'loaded live network events should enable CSV export');
+    events[0].name = '=HYPERLINK("https://example.invalid")<svg onload=alert(1)>新设备, "quoted"\r\nline two';
+    await page.waitForFunction(() => document.querySelector('#event-list').textContent.includes('HYPERLINK('), null, { timeout: 5000 });
+    assert.equal(await page.locator('#event-list svg').count(), 0, 'hostile event names must render as safe text');
+    const eventsCsvPromise = page.waitForEvent('download');
+    await page.locator('#events-csv-button').click();
+    const eventsCsvDownload = await eventsCsvPromise;
+    assert.match(eventsCsvDownload.suggestedFilename(), /^netspace-EVENTS-.*\.csv$/);
+    const eventsCsvPath = path.join(output, 'network-events.csv');
+    await eventsCsvDownload.saveAs(eventsCsvPath);
+    const eventsCsvBytes = fs.readFileSync(eventsCsvPath);
+    assert.equal(eventsCsvBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'events CSV should include a UTF-8 BOM');
+    const parsedEvents = parseCsv(eventsCsvBytes.subarray(3).toString('utf8'));
+    assert.deepEqual(parsedEvents[0], ['来源', '事件编号', '导出时间', '事件时间', '变化类型', '设备名称', '之前 IP', '当前 IP', '网络范围', '说明']);
+    assert.equal(parsedEvents.length, 5, 'events CSV should contain the loaded network events and no other network');
+    assert.equal(parsedEvents.every(row => row.length === 10), true, 'each event row should retain the complete CSV shape');
+    const formulaEventRow = parsedEvents.find(row => row[1] === '11');
+    assert.equal(formulaEventRow[0], '本地网络变化记录');
+    assert.equal(formulaEventRow[4], '新设备');
+    assert.equal(formulaEventRow[5], "'=HYPERLINK(\"https://example.invalid\")<svg onload=alert(1)>新设备, \"quoted\"\r\nline two");
+    const changedEventRow = parsedEvents.find(row => row[1] === '9');
+    assert.equal(changedEventRow[4], 'IP 已变化');
+    assert.equal(changedEventRow[6], '192.168.50.30'); assert.equal(changedEventRow[7], '192.168.50.31');
+    const missingEventRow = parsedEvents.find(row => row[1] === '8');
+    assert.equal(missingEventRow[6], '192.168.50.32'); assert.equal(missingEventRow[7], '');
+    assert.equal(missingEventRow[9], '本次未见不代表已确认离线');
+    await page.setViewportSize({ width: 320, height: 800 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'network event export must fit a 320px screen');
+    assert.ok(await page.locator('#events-csv-button').isVisible(), 'network event export should remain visible on a 320px screen');
+    await page.setViewportSize({ width: 1600, height: 1100 });
     await page.locator('#events-read').click();
     await page.waitForFunction(() => document.querySelector('#unread-count').textContent === '0');
     assert.deepEqual(posts.find(post => post.path === '/api/events/read').body, { networkId: 'network-A', allUnread: true });
@@ -258,10 +298,21 @@ async function run() {
     await page.waitForTimeout(300);
     assert.equal(await page.locator('#mute-toggle').getAttribute('aria-pressed'), 'false', 'stale monitor GET cannot reverse the newer unmute');
     events.length = 0;
-    for (let index = 0; index < 51; index++) events.push({ id: 100 + index, networkId: 'network-A', scanId: 2, deviceKey: 'device-' + index, kind: 'new', ip: '192.168.50.' + (index + 2), name: '未读设备 ' + index, occurredAt: a.scannedAt, read: false, notify: true });
+    await page.waitForFunction(() => document.querySelector('#events-csv-button').disabled);
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), true, 'event CSV export should be disabled when no current-network events are loaded');
+    for (let index = 50; index >= 0; index--) events.push({ id: 100 + index, networkId: 'network-A', scanId: 2, deviceKey: 'device-' + index, kind: 'new', ip: '192.168.50.' + (index + 2), name: '未读设备 ' + index, occurredAt: a.scannedAt, read: false, notify: true });
     events.push({ ...events[0], id: 999, networkId: 'network-B' });
     await page.waitForFunction(() => document.querySelector('#unread-count').textContent === '51', null, { timeout: 5000 });
     assert.equal(await page.locator('#event-list li').count(), 50);
+    const latestFiftyPromise = page.waitForEvent('download');
+    await page.locator('#events-csv-button').click();
+    const latestFiftyDownload = await latestFiftyPromise;
+    await latestFiftyDownload.saveAs(path.join(output, 'network-events-latest-50.csv'));
+    const latestFiftyRows = parseCsv(fs.readFileSync(path.join(output, 'network-events-latest-50.csv'), 'utf8').slice(1));
+    assert.equal(latestFiftyRows.length, 51, 'events CSV should cap output to the 50 loaded records');
+    assert.equal(latestFiftyRows.some(row => row[1] === '999'), false, 'events CSV must exclude other networks');
+    assert.equal(latestFiftyRows.some(row => row[1] === '150'), true, 'events CSV should include the newest loaded event');
+    assert.equal(latestFiftyRows.some(row => row[1] === '100'), false, 'events CSV must not claim events that were not loaded');
     await page.locator('#events-read').click();
     await page.waitForTimeout(200);
     assert.equal(await page.locator('#unread-count').innerText(), '0', 'mark-read must clear all51 unread records, including the hidden oldest record');
@@ -362,6 +413,17 @@ async function run() {
     assert.ok(releaseComparison, 'fixture should hold an in-flight history comparison');
     await page.locator('#network-filter').selectOption('network-B');
     await page.waitForFunction(() => document.querySelector('#history-scan option[value="3"]'));
+    await page.locator('#tab-events').click();
+    await page.waitForFunction(() => !document.querySelector('#events-csv-button').disabled);
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), false, 'an event belonging to the selected network may be exported');
+    const networkBCsvPromise = page.waitForEvent('download');
+    await page.locator('#events-csv-button').click();
+    const networkBCsv = await networkBCsvPromise;
+    await networkBCsv.saveAs(path.join(output, 'network-b-events.csv'));
+    const networkBRows = parseCsv(fs.readFileSync(path.join(output, 'network-b-events.csv'), 'utf8').slice(1));
+    assert.equal(networkBRows.length, 2, 'switching networks should load only the selected network events');
+    assert.equal(networkBRows[1][1], '999');
+    await page.locator('#tab-history').click();
     releaseComparison(); releaseComparison = null; delayComparison = false;
     await page.waitForTimeout(300);
     assert.equal(await page.locator('#history-comparison-list li').count(), 0, 'a late response from the previous network must not appear');
@@ -376,6 +438,9 @@ async function run() {
     assert.ok(releaseComparison, 'fixture should hold the demo-mode comparison request');
     await page.locator('#demo-toggle').click(); await page.locator('#demo-banner').waitFor({ state: 'visible' });
     assert.equal(await page.locator('#history-csv-button').isDisabled(), true, 'demo mode must not expose a prior network comparison export');
+    await page.locator('#tab-events').click();
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), true, 'demo mode must disable local network event export');
+    await page.locator('#tab-history').click();
     await page.locator('#leave-demo').click(); await page.locator('#demo-banner').waitFor({ state: 'hidden' });
     releaseComparison(); releaseComparison = null; delayComparison = false;
     await page.waitForTimeout(250);
@@ -396,6 +461,9 @@ async function run() {
     assert.equal(await page.locator('#profile-save').isDisabled(), true);
     assert.equal(await page.locator('#monitor-toggle').isDisabled(), true);
     assert.ok((await page.locator('#device-list').innerText()).includes('HISTORICAL-PC'));
+    await page.locator('#tab-events').click();
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), true, 'historical replay must disable live network event export');
+    await page.locator('#tab-history').click();
     const downloadPromise = page.waitForEvent('download');
     await page.locator('#export-button').click();
     const download = await downloadPromise;
@@ -498,7 +566,7 @@ async function run() {
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'automatic network reselection must not enable a comparison using only the new network latest snapshot');
     assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'automatic network reselection must replace old results with the empty state');
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'history difference CSV fields, injection protection and 320px layout', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread and network-event CSV fields, formula injection, isolation, 50-record cap and 320px layout', 'event export disabled during demo and historical replay', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'history difference CSV fields, injection protection and 320px layout', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
   } finally { await browser.close(); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
