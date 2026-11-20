@@ -1,5 +1,6 @@
 import { createWorkspace } from '/workspace.js';
 import { buildDeviceCsv } from '/csv.js';
+import { createDeviceCheck } from '/device-check.js';
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
 const kindNames = { self: '本机', gateway: '默认网关', device: '网络设备' };
@@ -31,6 +32,7 @@ let lastRealSelection = null;
 let demoResult = null;
 let joinedScan = false;
 let workspace = null;
+let deviceCheck = null;
 let backupInProgress = false;
 
 function makeDemoResult() {
@@ -114,6 +116,7 @@ function applyState(state) {
     incoming.devices = incoming.devices.map(device => profiles.has(device.deviceKey) ? { ...device, profile: { ...device.profile, ...profiles.get(device.deviceKey) } } : device);
   }
   realState = state; saveResult(state.result); pollFailures = 0;
+  deviceCheck?.observe(state.deviceCheck);
   workspace?.observeState(state);
   if (joinedScan && state.status !== 'scanning') {
     const completedInterfaceId = String(state.result?.interface?.id ?? '');
@@ -154,7 +157,7 @@ async function pollState() {
   }
 }
 async function startScan() {
-  if (stopped || scanStarting || isScanning() || !interfaceId || workspace?.replayResult) return;
+  if (stopped || scanStarting || isScanning() || deviceCheck?.busy || !interfaceId || workspace?.replayResult) return;
   if (demo) setDemo(false);
   joinedScan = false;
   scanStarting = true; realState = { ...realState, status: 'scanning', error: null, progress: { phase: 'starting', completed: 0, total: 0, message: '正在准备发现设备…' } }; render();
@@ -238,6 +241,7 @@ function selectDevice(id) {
   const result = activeResult();
   if (result) renderDetails(result.devices.find((device) => device.id === id), result);
   workspace?.render(result, result?.devices.find((device) => device.id === id));
+  deviceCheck?.sync();
   for (const row of ui['device-list'].querySelectorAll('button')) row.setAttribute('aria-pressed', String(row.dataset.deviceId === id));
   scene?.setSelected(id);
 }
@@ -270,7 +274,7 @@ function render() {
   text('list-source', demo ? '虚构演示' : historical ? '历史快照' : '真实网络');
   ui['scene-mode'].classList.toggle('is-demo', demo || historical); ui['scene-mode'].lastChild.textContent = demo ? '模拟空间 · 虚构设备' : historical ? '模拟空间 · 历史快照' : '模拟空间 · 真实设备';
   ui['interface-select'].disabled = booting || scanning || stopped || !interfaces.length;
-  ui['scan-button'].disabled = booting || scanning || stopped || !interfaceId || historical;
+  ui['scan-button'].disabled = booting || scanning || stopped || !interfaceId || historical || Boolean(deviceCheck?.busy);
   text('scan-button-text', stopped ? '服务已停止' : scanning ? '正在发现…' : '发现设备');
   ui['export-button'].disabled = !result;
   ui['export-csv-button'].disabled = !result || !visibleDevices.length;
@@ -307,6 +311,8 @@ function render() {
   text('scene-hint', sceneError ? '设备列表与导出功能仍可使用' : '拖动旋转 · 滚轮缩放 · 点击设备查看');
   renderList(visibleDevices, devices.length); renderDetails(devices.find((device) => device.id === selectedId), result); renderScene(result, visibleDevices);
   workspace?.render(result, devices.find((device) => device.id === selectedId));
+  deviceCheck?.sync();
+  if (deviceCheck?.busy) ui['monitor-toggle'].disabled = true;
 }
 
 function setDemo(value) {
@@ -407,7 +413,15 @@ workspace = createWorkspace({
   leaveReplay: () => { selectedId = null; resetDeviceFilters(); render(); },
   patchProfile: (networkId, deviceKey, profile) => { for (const result of realResults.values()) if (result.networkId === networkId) for (const device of result.devices) if (device.deviceKey === deviceKey) device.profile = { ...profile }; },
 });
-window.addEventListener('pagehide', () => { clearTimeout(pollTimer); workspace?.destroy(); scene?.destroy(); });
+deviceCheck = createDeviceCheck({
+  ui, api, rerender: render,
+  readContext: () => {
+    const result = activeResult();
+    return { result, device: result?.devices.find(device => device.id === selectedId), demo, historical: Boolean(workspace?.replayResult), stopped, booting, scanning: isScanning(),
+      current: Boolean(result?.networkId && realState.result?.networkId === result.networkId && realState.result?.scanId === result.scanId && realState.result?.scannedAt === result.scannedAt) };
+  },
+});
+window.addEventListener('pagehide', () => { clearTimeout(pollTimer); deviceCheck?.destroy(); workspace?.destroy(); scene?.destroy(); });
 updateRotate();
 initializeScene();
 initialize().then(() => workspace.initialize());

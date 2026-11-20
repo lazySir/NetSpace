@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.12.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.13.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -35,6 +35,10 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 
 ![NetSpace 网络变化记录：名称模糊搜索、IP 精确片段匹配、类型筛选和 CSV 导出](docs/images/netspace-events-export.png)
 
+服务暴露检查画面使用虚构设备和连接结果替身，仅演示操作与结果含义，没有连接截图中的地址。
+
+![NetSpace 单设备服务暴露检查：固定七个 TCP 端口、逐次授权与连接结果说明](docs/images/netspace-device-check.png)
+
 ## 能做什么
 
 ```text
@@ -54,6 +58,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 14  BACKUP     下载本地 SQLite 数据库备份
 15  EVENTS CSV 导出当前网络已加载的最近变化记录
 16  EVENT FILTER 按类型筛选；设备名称模糊搜索，IP 精确片段搜索
+17  SERVICE CHECK 手动检查一台已授权设备的 7 个常见 TCP 服务入口
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
@@ -67,6 +72,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 - Three.js 和页面资源随项目提供，界面可以离线加载。
 - SQLite 设备档案和历史数据在应用重启后保留。
 - 可选桌面提醒需在界面中手动授权；无权限或不支持时继续使用页面内提醒。桌面提醒只在 NetSpace 页面打开期间运行，且不显示设备名称、IP 或 MAC。
+- 服务暴露检查必须手动选择设备并在每次开始前勾选授权；只对该设备的固定 7 个 TCP 端口尝试连接。结果只留在本次应用进程内，不写入设备档案、历史或数据库备份。
 
 ## Windows 使用
 
@@ -105,6 +111,26 @@ dist/NetSpace-Source.zip
 
 程序包含 Python 运行环境和页面资源，运行时不要求另装 Python、Node.js、Docker 或抓包驱动。
 
+### 检查一台设备的常见服务
+
+1. 在你拥有或获准管理的网络中打开 NetSpace，选择当前 Wi-Fi 或以太网适配器，点击发现设备。
+2. 在设备列表或 3D 图中选中一台其他设备，在详情中的“服务暴露检查”点击“了解并检查”。
+3. 阅读检查对象与固定范围，确认已获得该设备的检查授权后勾选，再点击“开始检查这台设备”。每次开始都需要重新勾选。
+4. 查看每个端口的观察结果；需要时点击“停止本次检查”。关闭检查窗口只收起窗口，正在进行的检查会继续。
+
+| 结果 | 表示什么 |
+| --- | --- |
+| 可连接 | 该 TCP 端口接受了连接；不代表存在漏洞，也不确认运行的具体软件 |
+| 拒绝连接 | 本次连接尝试被拒绝 |
+| 未响应 | 在本次等待时间内没有得到结果，无法据此判断端口是否开放 |
+| 不可用 | 连接过程发生其他网络或系统错误，本次无法完成判断 |
+
+固定范围是 **TCP 21、22、23、80、443、445、3389**，分别标注 FTP、SSH、Telnet、HTTP、HTTPS、SMB 和远程桌面的常见用途。检查仅尝试建立连接并立即关闭，不输入密码、不发送应用数据、不执行漏洞利用、不修改设备设置；目标设备可能记录这些连接。端口名称只是常见用途，不是服务识别结果。
+
+仅可检查本次应用进程中**最近 5 分钟内最新发现**的其他设备；当前网卡的 IP、前缀、网关和 MAC 必须与发现时一致，目标必须位于当前网卡的同一子网及本次发现范围内，且属于 `10.0.0.0/8`、`172.16.0.0/12` 或 `192.168.0.0/16` 私网。历史快照、演示数据、过期记录、公网地址和本机地址不能用于检查。网络变化或记录过期时，先重新发现设备；同一时刻只允许一项检查。结果按网络、设备和本次扫描记录关联，重新发现后不会沿用上次的检查结果。网卡参数和 IP 记录不能认证设备的真实身份。
+
+发现不需要的入口后，先确认设备用途，再通过设备自己的管理页面或设置关闭不使用的服务，并安装官方更新。开放端口不等于漏洞或被入侵，NetSpace 不会自动替你修改设备。
+
 ## 网络发现边界
 
 NetSpace 展示的是本机在局域网中能观察到的设备记录，不是对“同一 Wi-Fi 上所有人”的准确枚举。
@@ -114,7 +140,7 @@ NetSpace 展示的是本机在局域网中能观察到的设备记录，不是�
 - Wi-Fi 客户端隔离、VLAN、设备休眠和网络策略可能使设备不可见。扫描结果不能保证完整。
 - 主机名或 MAC 缺失时会保留未知；设备数不等于在线人数。
 - “已解析”可能来自 Windows 缓存，不保证目标当前在线；“本次未发现”也不等于确认离线。
-- 不做端口扫描，不抓取通信内容，不推断真实地理位置。
+- 默认设备发现不扫描端口；只有手动授权的单设备服务暴露检查会连接上述固定 7 个 TCP 端口。不抓取通信内容，不推断真实地理位置。
 
 ## 本地数据与隐私
 
@@ -128,6 +154,7 @@ NetSpace.exe --data-dir D:\NetSpaceData
 
 - 备份时先退出应用，再复制 `%LOCALAPPDATA%/NetSpace/`。
 - 数据最多保留每个网络最近 500 次扫描和 2000 条变化记录；设备档案继续保留。
+- 服务暴露检查的进度与结果仅保存在内存，退出应用后清除；它们不写入 SQLite，也不包含在数据库备份内。
 
 ## 项目结构
 
@@ -136,6 +163,7 @@ app.py                 本机 HTTP 服务、扫描流程与生命周期
 windows_network.py     Windows 网卡、邻居缓存和原生地址解析
 network_store.py       SQLite 设备档案、历史快照和变化记录
 monitoring.py          定时发现与停止控制
+device_check.py        单设备固定 TCP 端口连接检查
 web/                   中文界面、响应式布局和离线 3D 场景
 tests/                 Python 回归测试
 tools/                 打包、资源校验和 UI 验证脚本
@@ -150,13 +178,19 @@ docs/images/           README 演示图（仅虚构演示数据）
 python -m unittest discover -s tests -v
 ```
 
-Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网络发现、跨重启持久化、定时发现和正常退出：
+Windows 构建后，下面的检查只验证程序启动、离线资源、初始空闲状态与退出，不枚举网卡、不发现设备、不连接设备端口：
+
+```powershell
+python tools/packaged_smoke.py --no-network
+```
+
+省略该选项会执行真实网络发现，用于验证跨重启持久化和定时发现；仅在你拥有或获准管理的网络中运行：
 
 ```powershell
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：84 项 Python 测试通过；Windows 单文件程序构建与打包运行、本地 SQLite 备份完整性与下载、事件类型与模糊搜索、筛选后 CSV、跨网络隔离、恶意名称安全呈现和 320 px 布局检查通过。详细记录见 [docs/verification-1.12.0-2026-11-20.md](docs/verification-1.12.0-2026-11-20.md)。
+**1.13.0 验证结果**：101 项 Python 测试、单设备检查与现有浏览器回归、320/375 px 布局、Windows 构建及 `--no-network` 打包检查通过。本轮使用虚构网卡、发现记录和连接替身，未执行真实设备发现或向设备发起 TCP 连接；未运行原生发现验收路径。完整结果与一次浏览器超时重跑记录见 [docs/verification-1.13.0-2026-11-20.md](docs/verification-1.13.0-2026-11-20.md)。先前版本的验证不代表本轮真实网络实测。
 
 ## 架构速览
 
@@ -186,6 +220,13 @@ Windows adapters / neighbor cache / native address resolution
 ## 第三方组件与授权
 
 项目内置 Three.js 0.187.0、OrbitControls 和 Fuse.js 7.5.0；依赖固定并随程序本地提供，不使用 CDN。许可见 THIRD_PARTY_NOTICES.md、web/vendor/THREE-LICENSE.txt 和 web/vendor/FUSE-LICENSE.txt。Python 打包运行时的许可说明随 Windows 分发包提供。
+
+### 本轮 GitHub 调研与择用
+
+- **已复用**：[Three.js](https://github.com/mrdoob/three.js) 的本地 3D 渲染与 OrbitControls（MIT）；[Fuse.js v7.5.0](https://github.com/krisk/Fuse/tree/v7.5.0) 的离线名称模糊搜索（Apache-2.0，提交 `45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a`）。相关上游代码和许可证已随仓库提供。
+- **本轮实现选择**：使用 [CPython 标准库 socket](https://docs.python.org/3.8/library/socket.html#socket.create_connection) 完成有限的 TCP connect 检查，无新增第三方扫描器、命令行工具或驱动依赖。CPython 的 PSF 及相关运行时许可随打包程序提供；这里使用标准库 API，没有复制其他扫描器源码。
+- **参考，未集成 Nmap**：[Nmap 官方 TCP connect 说明](https://nmap.org/book/scan-methods-connect-scan.html) 用于核对连接方式和日志影响。核查的[官方仓库提交](https://github.com/nmap/nmap/tree/bb81d1392145080d93ff50d91e1598bdde5248e3) 使用 [NPSL 0.95](https://github.com/nmap/nmap/blob/bb81d1392145080d93ff50d91e1598bdde5248e3/LICENSE)；[官方法律说明](https://nmap.org/book/man-legal.html) 还列出 Npcap 独立分发限制。本轮只需固定 7 个端口的连接观察，因此不捆绑 Nmap 或 Npcap。
+- **后续参考，未接入网页检查**：[OWASP Secure Headers Project](https://github.com/OWASP/secure-headers-project/tree/0e7ad7d75ee45e02b55d1b426c4c5e43ef8b7de0) 提供 HTTP 安全头资料，采用 Apache-2.0。它适合后续评估网页配置提示；本轮服务检查只观察 TCP 连接，不读取 HTTP 内容，也不将缺少响应头认定为漏洞。
 
 本仓库暂未指定项目自身的开源许可证。公开可见源码不代表自动授予复制、修改或分发许可；如需复用，请先联系作者确认。
 
@@ -278,3 +319,11 @@ Windows adapters / neighbor cache / native address resolution
 - 列表与 CSV 导出共用相同的筛选结果；空匹配时禁用导出并显示提示。筛选只作用于当前选中的网络，网络切换时自动清空；未读数量仍统计该网络全部未读事件。
 - 从 GitHub 固定引入 Fuse.js 7.5.0（Apache-2.0，commit 45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a），本地离线加载并保留上游许可证。
 - **验证**：浏览器回归覆盖容错名称搜索、类型与搜索组合、未读数保持、筛选后 CSV 字段、空结果禁用、网络切换清空、恶意名称纯文本和 320 px 布局；Python 测试、Windows 打包、许可文件随包、CSP 与无外部请求检查通过。详见 [docs/verification-1.12.0-2026-11-20.md](docs/verification-1.12.0-2026-11-20.md)。
+
+### 1.13.0 — 单设备服务暴露检查（2026-11-20）
+
+- 在设备详情中新增手动检查入口，逐次确认授权后，对选中设备的 TCP 21、22、23、80、443、445、3389 各尝试一次连接；提供进度和停止操作，结果分为可连接、拒绝连接、未响应和不可用。
+- 目标由服务端从本次进程最新、5 分钟内的发现记录解析；核对当前网卡参数、同子网、发现范围和 RFC 1918 私网，拒绝演示、历史、过期、公网和本机目标。浏览器不能自填目标 IP 或端口。
+- 检查不登录、不发送应用数据、不执行漏洞利用，也不修改设备设置；开放入口不等于漏洞。结果仅驻留内存，不写入历史、档案或数据库备份。
+- 继续复用 Three.js 与 Fuse.js；服务检查使用 Python 标准库，参考官方 Nmap TCP connect 原理，未引入 Nmap、Npcap 或其他扫描器依赖。
+- 更新新手步骤、结果含义、GitHub 择用说明和虚构截图；新增不访问局域网的打包检查模式。本轮 101 项 Python 测试、浏览器回归和 Windows 构建及无网络发现的打包检查通过，未执行真实设备扫描或连接；完整结果见 [docs/verification-1.13.0-2026-11-20.md](docs/verification-1.13.0-2026-11-20.md)。

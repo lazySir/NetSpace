@@ -24,6 +24,9 @@ class LocalServerTests(unittest.TestCase):
         self.calls = []
         self.gate = threading.Event()
         self.gate.set()
+        self.check_calls = []
+        self.check_gate = threading.Event()
+        self.check_gate.set()
         self.interfaces = [{'id': '7', 'alias': 'Ethernet', 'ip': '192.168.50.20',
                             'prefixLength': 24, 'gateway': '192.168.50.1'}]
 
@@ -34,7 +37,14 @@ class LocalServerTests(unittest.TestCase):
             return {'interface': self.interfaces[0], 'devices': [{'id': '192.168.50.20'}],
                     'links': [], 'warnings': [], 'scope': {'targetCount': 2}}
 
-        self.server = self.app.create_server(port=0, interfaces_provider=lambda: self.interfaces, scanner=scanner)
+        def port_probe(ip, port):
+            self.check_calls.append((ip, port))
+            self.check_gate.wait(2)
+            return {'port': port, 'service': '测试服务', 'status': 'closed'}
+
+        self.port_probe = port_probe
+        self.server = self.app.create_server(port=0, interfaces_provider=lambda: self.interfaces,
+                                             scanner=scanner, port_probe=port_probe)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = 'http://127.0.0.1:{}'.format(self.server.server_port)
@@ -42,6 +52,7 @@ class LocalServerTests(unittest.TestCase):
     def tearDown(self):
         if hasattr(self, 'server'):
             self.gate.set()
+            self.check_gate.set()
             self.server.shutdown()
             self.server.server_close()
             self.thread.join(2)
@@ -60,10 +71,36 @@ class LocalServerTests(unittest.TestCase):
             content_type = response.headers.get('Content-Type', '')
             return response.status, json.loads(body.decode('utf-8')) if 'application/json' in content_type else body
 
+    def save_check_snapshot(self, peer_ip='192.168.50.45', scanned_at=None, cidr='192.168.50.0/24'):
+        import datetime
+        if scanned_at is None:
+            scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
+        result = {'interface': {**self.interfaces[0], 'cidr': cidr},
+                  'devices': [
+                      {'id': self.interfaces[0]['ip'], 'ip': self.interfaces[0]['ip'], 'kind': 'self',
+                       'hostname': 'TEST-WORKSTATION'},
+                      {'id': peer_ip, 'ip': peer_ip, 'kind': 'device', 'hostname': 'TEST-PEER'},
+                  ],
+                  'links': [], 'warnings': [], 'scope': {'cidr': cidr},
+                  'scannedAt': scanned_at, 'durationMs': 1}
+        saved = self.server.state.store.record_scan(result)
+        with self.server.state.lock:
+            self.server.state.result = saved
+            self.server.state.status = 'complete'
+        return saved
+
+    def wait_for_check(self):
+        for _ in range(100):
+            check = self.request('/api/device-check')[1]
+            if check['status'] != 'checking':
+                return check
+            time.sleep(.01)
+        self.fail('device check did not complete')
+
     def test_interfaces_and_initial_state(self):
         status, health = self.request('/api/health')
         self.assertEqual(status, 200)
-        self.assertEqual(health['version'], '1.12.0')
+        self.assertEqual(health['version'], '1.13.0')
         status, body = self.request('/api/interfaces')
         self.assertEqual(status, 200)
         self.assertEqual(body['interfaces'][0]['id'], '7')
@@ -160,6 +197,167 @@ class LocalServerTests(unittest.TestCase):
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'}, {'Origin': 'https://other.example'})[0], 403)
         self.assertEqual(self.request('/api/state', headers={'Host': 'other.example'})[0], 403)
         self.assertEqual(self.calls, [])
+
+    def test_device_check_requires_same_origin_explicit_permission_and_real_saved_peer(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        origin = {'Origin': self.base}
+        self.assertEqual(self.request('/api/device-check', body, method='POST')[0], 403)
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': 'https://other.example'}, method='POST')[0], 403)
+        self.assertEqual(self.request('/api/device-check', {**body, 'ip': '192.168.50.45'}, origin, method='POST')[0], 400)
+        self.assertEqual(self.request('/api/device-check', {**body, 'authorized': False}, origin, method='POST')[0], 400)
+        self.assertEqual(self.request('/api/device-check', {**body, 'deviceKey': 'f' * 32}, origin, method='POST')[0], 404)
+        self.assertEqual(self.check_calls, [])
+
+        status, started = self.request('/api/device-check', body, origin, method='POST')
+        self.assertEqual(status, 202)
+        self.assertNotIn('192.168.50.45', json.dumps(started))
+        result = self.wait_for_check()
+        self.assertEqual([port for _, port in self.check_calls], [21, 22, 23, 80, 443, 445, 3389])
+        self.assertTrue(all(ip == '192.168.50.45' for ip, _ in self.check_calls))
+        self.assertEqual(result['status'], 'complete')
+        self.assertEqual(result['networkId'], saved['networkId'])
+        self.assertEqual(result['deviceKey'], peer['deviceKey'])
+        self.assertNotIn('192.168.50.45', json.dumps(result))
+        self.assertEqual(self.server.state.store.list_scans(saved['networkId'], 10)[0]['id'], saved['scanId'])
+
+    def test_device_check_rejects_self_stale_nonprivate_and_out_of_scope_targets(self):
+        from datetime import datetime, timedelta, timezone
+        stale = (datetime.now(timezone.utc) - timedelta(minutes=7)).isoformat()
+        saved = self.save_check_snapshot(scanned_at=stale)
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        headers = {'Origin': self.base}
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+
+        saved = self.save_check_snapshot(peer_ip=self.interfaces[0]['ip'])
+        local = next(item for item in saved['devices'] if item['kind'] == 'self')
+        body = {'networkId': saved['networkId'], 'deviceKey': local['deviceKey'], 'authorized': True}
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+
+        saved = self.save_check_snapshot(peer_ip='192.168.51.45')
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_rejects_network_change_disconnected_adapter_and_historical_record(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        headers = {'Origin': self.base}
+        self.interfaces[0]['ip'] = '192.168.60.20'
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+        self.interfaces[0]['ip'] = '192.168.50.20'
+        self.server.state.result = None
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+        self.server.state.result = saved
+        self.interfaces.clear()
+        self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_rejects_network_broadcast_and_every_local_adapter_address(self):
+        saved = self.save_check_snapshot(peer_ip='192.168.50.255')
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
+        saved = self.save_check_snapshot()
+        self.interfaces.append({'id': '8', 'ip': '192.168.50.45', 'prefixLength': 24, 'gateway': '192.168.50.1'})
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_cannot_start_while_discovering(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.gate.clear()
+        self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 202)
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 409)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_default_probe_receives_validated_source_address(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.server.state.port_probe = None
+        with mock.patch.object(self.app, 'probe_tcp_port', return_value={'status': 'open'}) as probe:
+            self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+            completed = self.wait_for_check()
+            self.assertEqual(completed['status'], 'complete')
+            self.assertEqual(completed['scanId'], saved['scanId'])
+            self.assertEqual(probe.call_args_list, [
+                mock.call('192.168.50.45', port, source_ip='192.168.50.20')
+                for port in (21, 22, 23, 80, 443, 445, 3389)])
+
+    def test_device_check_rejects_future_records_and_non_lan_addresses(self):
+        saved = self.save_check_snapshot(scanned_at='2099-01-01T00:00:00Z')
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
+        for address in ('8.8.8.8', '127.0.0.2', '169.254.1.2', '224.0.0.1'):
+            saved = self.save_check_snapshot(peer_ip=address)
+            peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+            body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+            self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_rejects_duplicate_json_keys_before_any_probe(self):
+        payload = b'{"authorized":false,"authorized":true}'
+        request = urllib.request.Request(self.base + '/api/device-check', data=payload,
+                                         headers={'Content-Type': 'application/json', 'Origin': self.base})
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request, timeout=3)
+        with raised.exception as response:
+            self.assertEqual(response.code, 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_device_check_worker_failure_allows_a_fresh_authorized_retry(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        with mock.patch.object(self.app.threading.Thread, 'start', side_effect=RuntimeError('cannot start')):
+            with self.assertRaises(RuntimeError):
+                self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], True)
+        self.assertEqual(self.server.state.device_check_snapshot()['status'], 'error')
+        self.assertFalse(self.server.state.is_scanning())
+        self.assertEqual(self.check_calls, [])
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+        self.assertEqual(self.wait_for_check()['status'], 'complete')
+
+    def test_close_stops_device_check_before_the_next_probe(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.check_gate.clear()
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+        for _ in range(100):
+            if self.check_calls:
+                break
+            time.sleep(.01)
+        self.server.state.close()
+        self.check_gate.set()
+        self.server.state.device_check_thread.join(1)
+        self.assertEqual(len(self.check_calls), 1)
+        self.assertEqual(self.server.state.device_check_snapshot()['status'], 'cancelled')
+        with self.assertRaises(ValueError):
+            self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], True)
+
+    def test_device_check_is_single_task_cancellable_and_mutually_exclusive_with_discovery(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        self.check_gate.clear()
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 409)
+        self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 409)
+        self.assertEqual(self.request('/api/device-check/cancel', {}, {'Origin': self.base}, method='POST')[0], 200)
+        self.check_gate.set()
+        result = self.wait_for_check()
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(len(self.check_calls), 1)
 
     def test_same_origin_request_is_accepted(self):
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'}, {'Origin': self.base})[0], 202)

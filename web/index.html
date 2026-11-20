@@ -109,6 +109,7 @@
             <dl class="detail-properties"><div><dt>IP 地址</dt><dd class="mono" id="detail-ip"></dd></div><div><dt>MAC 地址</dt><dd class="mono" id="detail-mac"></dd></div><div><dt>主机名称</dt><dd id="detail-hostname"></dd></div><div><dt>地址解析耗时</dt><dd id="detail-latency"></dd></div><div><dt>所属网段</dt><dd class="mono" id="detail-subnet"></dd></div></dl>
             <form id="profile-form" class="profile-form"><div class="profile-heading"><h4>设备档案</h4><span>仅保存在本机</span></div><div class="observation-times"><span>首次 <time id="profile-first-seen">—</time></span><span>最近 <time id="profile-last-seen">—</time></span></div><label for="profile-alias">备注名称<input id="profile-alias" maxlength="80" placeholder="给设备起个容易认出的名字" autocomplete="off"></label><label for="profile-group">分组<input id="profile-group" maxlength="40" placeholder="例如：家庭、办公" autocomplete="off"></label><label for="profile-notes">备注<textarea id="profile-notes" maxlength="1000" rows="2" placeholder="位置、用途或其他记录"></textarea></label><div class="profile-flags"><label><input id="profile-known" type="checkbox">已认识</label><label><input id="profile-ignored" type="checkbox">忽略提醒</label></div><div class="profile-save-row"><button id="profile-save" class="compact-button" type="submit" disabled>保存档案</button><span id="profile-status" role="status"></span></div></form>
             <div class="evidence-section"><h4>发现依据</h4><div class="evidence-tags" id="detail-evidence"></div></div>
+            <section class="device-check-entry" aria-labelledby="device-check-heading"><div class="device-check-entry-heading"><h4 id="device-check-heading">服务暴露检查</h4><span>单台设备</span></div><p>看看这台设备是否接受常见服务连接，帮助你找到不需要开放的入口。</p><button id="device-check-open" class="compact-button" type="button" disabled aria-describedby="device-check-availability">了解并检查</button><p id="device-check-availability" class="device-check-availability" role="status">请先选择最近发现的其他设备。</p></section>
             <div class="detail-explanation"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><p id="detail-explanation">节点位置为模拟布局，不表示设备的实际物理位置；同网段连线不表示已验证的物理连接。</p></div>
           </div>
           <div class="details-bottom"><span class="outline-square" aria-hidden="true"></span>空间仅用于呈现网络关系</div>
@@ -119,6 +120,19 @@
       <p class="privacy-note">本机发现 · 本地呈现 <span>—</span> 设备结果来自当前扫描及系统邻居记录，缓存记录不等于当前在线。</p>
     </main>
   </div>
+  <dialog id="device-check-dialog" class="device-check-dialog" aria-labelledby="device-check-title" aria-describedby="device-check-intro">
+    <button id="device-check-dismiss" type="button" class="device-check-dismiss" aria-label="关闭服务检查窗口">关闭 <span aria-hidden="true">×</span></button>
+    <div class="device-check-dialog-heading"><span class="eyebrow">SERVICE CHECK // 单台设备</span><h2 id="device-check-title">检查这台设备的服务</h2><p id="device-check-intro">会真实尝试连接下面 7 个常见服务端口，每个仅尝试一次。不输入密码、不发送攻击内容、不修改设备设置。目标设备可能记录这些连接。</p></div>
+    <div class="device-check-target"><span>本次检查对象</span><strong id="device-check-target-name"></strong><span id="device-check-target-ip" class="mono"></span></div>
+    <div class="device-check-scope"><span>固定检查范围</span><p>FTP 21 · SSH 22 · Telnet 23 · 网页 80 / 443 · 文件共享 445 · 远程桌面 3389</p></div>
+    <label class="device-check-consent" for="device-check-consent"><input id="device-check-consent" type="checkbox"><span>这台设备由我拥有或管理，或我已得到设备管理者的检查授权。</span></label>
+    <div class="device-check-progress"><p id="device-check-status" role="status" aria-live="polite" aria-atomic="true">阅读说明并勾选授权后，再点击开始。</p><progress id="device-check-progress" max="7" value="0" aria-label="服务检查进度" hidden></progress></div>
+    <p id="device-check-error" class="device-check-error" role="alert" hidden></p>
+    <ul id="device-check-results" class="device-check-results" aria-label="服务连接检查结果"></ul>
+    <p class="device-check-meaning"><strong>怎么看结果？</strong>“可连接”只代表有服务接受连接，不等于存在漏洞；“拒绝连接”表示本次被明确拒绝；“未响应”无法判断是否开放；“不可用”表示本机或网络无法完成本项检查。端口名称是常见用途，本次不会识别实际运行的软件。</p>
+    <details class="device-check-help"><summary>发现不需要的服务后，我该怎么做？</summary><p>先确认设备用途，再到设备自己的管理页面或设置里关闭不使用的远程管理、文件共享等功能，并安装官方更新。不要仅凭端口开放就认定设备被入侵。NetSpace 不会自动修改这些设置。</p></details>
+    <div class="device-check-actions"><button id="device-check-close" type="button" class="button button-secondary">关闭</button><button id="device-check-cancel" type="button" class="button button-secondary" disabled>停止本次检查</button><button id="device-check-start" type="button" class="button button-primary" disabled>开始检查这台设备</button></div>
+  </dialog>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

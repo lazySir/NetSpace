@@ -16,6 +16,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--exe', default='dist/NetSpace.exe')
     parser.add_argument('--port', type=int, default=8766)
+    parser.add_argument('--no-network', action='store_true',
+                        help='Check startup, assets and shutdown only; never enumerate or probe the LAN')
     args = parser.parse_args()
     distribution = Path(__file__).resolve().parent.parent / 'dist' / 'NetSpace-Windows-x64.zip'
     with ZipFile(str(distribution)) as archive:
@@ -27,6 +29,9 @@ def main():
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def request(path, data=None, timeout=30):
+        if args.no_network and path.startswith('/api/'):
+            assert path in {'/api/health', '/api/state', '/api/history', '/api/device-check', '/api/shutdown'}
+            assert data is None or path == '/api/shutdown', 'No network tasks may start in no-network mode'
         payload = None if data is None else json.dumps(data).encode('utf-8')
         req = urllib.request.Request(base + path, data=payload,
                                      headers={'Content-Type': 'application/json'})
@@ -72,7 +77,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.12.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.13.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -93,7 +98,7 @@ def main():
     try:
         wait_start()
         checks.append('bundled runtime without Python on PATH')
-        for resource in ('/', '/app.js', '/workspace.js', '/csv.js', '/identity.js', '/scene.js', '/style.css',
+        for resource in ('/', '/app.js', '/device-check.js', '/workspace.js', '/csv.js', '/identity.js', '/scene.js', '/style.css',
                          '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js', '/vendor/fuse.min.js'):
             bundled = request(resource)
             assert len(bundled) > 100, resource
@@ -108,6 +113,19 @@ def main():
         assert process.poll() is None
         assert request('/api/health')['app'] == 'NetSpace'
         checks.append('duplicate launch keeps one application')
+        if args.no_network:
+            state = request('/api/state')
+            assert state['status'] == 'idle' and state['result'] is None
+            assert state['deviceCheck']['status'] == 'idle'
+            assert not state['monitor']['enabled']
+            assert request('/api/history')['scans'] == []
+            assert request('/api/device-check')['status'] == 'idle'
+            checks.append('discovery, monitor and device check remain idle')
+            request('/api/shutdown', {})
+            assert process.wait(timeout=15) == 0
+            checks.append('clean application shutdown')
+            print(json.dumps({'result': 'PASS', 'mode': 'no-network', 'checks': checks}))
+            return
         interfaces = request('/api/interfaces')['interfaces']
         assert interfaces, 'A connected Windows IPv4 interface is required for this integration check'
         request('/api/scan', {'interfaceId': str(interfaces[0]['id'])})

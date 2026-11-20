@@ -5,6 +5,7 @@ import copy
 import datetime
 import hashlib
 from functools import lru_cache
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -25,9 +26,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from monitoring import MonitorController
 from network_store import NetworkStore
+from device_check import SERVICES, probe_tcp_port
 
 
-VERSION = '1.12.0'
+VERSION = '1.13.0'
+DEVICE_CHECK_FRESH_SECONDS = 300
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
 LOGGER = logging.getLogger('netspace')
@@ -56,7 +59,7 @@ def content_security_policy():
 
 
 class ScanState:
-    def __init__(self, interfaces_provider, scanner, store):
+    def __init__(self, interfaces_provider, scanner, store, port_probe=None):
         self.interfaces_provider = interfaces_provider
         self.scanner = scanner
         self.lock = threading.RLock()
@@ -68,6 +71,11 @@ class ScanState:
         self.stopping = threading.Event()
         self.scan_interface_id = None
         self.store = store
+        self.port_probe = port_probe
+        self.device_check = {'status': 'idle', 'completed': 0, 'total': len(SERVICES), 'results': [],
+                             'networkId': None, 'deviceKey': None, 'scanId': None}
+        self.device_check_cancel = None
+        self.device_check_thread = None
         self.persistence_lock = threading.RLock()
         self.monitor_settings_lock = threading.RLock()
         self.closed = False
@@ -83,13 +91,160 @@ class ScanState:
         with self.lock:
             snapshot = copy.deepcopy({'status': self.status, 'progress': self.progress,
                                       'result': self.result, 'error': self.error,
-                                      'scanInterfaceId': self.scan_interface_id})
+                                      'scanInterfaceId': self.scan_interface_id,
+                                      'deviceCheck': self.device_check})
         snapshot['monitor'] = self.monitor_snapshot()
         return snapshot
 
+    def device_check_snapshot(self):
+        with self.lock:
+            return copy.deepcopy(self.device_check)
+
     def is_scanning(self):
         with self.lock:
-            return self.status == 'scanning'
+            return self.status == 'scanning' or self.device_check['status'] == 'checking'
+
+    def cancel_device_check(self):
+        with self.lock:
+            if self.device_check['status'] != 'checking' or self.device_check_cancel is None:
+                return False
+            self.device_check_cancel.set()
+            return True
+
+    def _resolve_check_target(self, network_id, device_key):
+        if (not isinstance(network_id, str) or not 1 <= len(network_id) <= 80 or
+                not isinstance(device_key, str) or re.fullmatch(r'[0-9a-f]{32}', device_key) is None):
+            raise ValueError('请选择本次发现列表中的设备。')
+        with self.lock:
+            live = copy.deepcopy(self.result)
+        if not live or live.get('networkId') != network_id:
+            raise ValueError('请先在当前应用中发现该网络的设备。')
+        scans = self.store.list_scans(network_id, limit=1)
+        if not scans:
+            raise KeyError('当前网络没有已保存的发现结果，请先重新发现设备。')
+        latest = scans[0]
+        result = self.store.get_scan(latest['id'])
+        if (not isinstance(result, dict) or result.get('networkId') != network_id or
+                result.get('scanId') != latest['id']):
+            raise KeyError('最新发现记录不可用，请重新发现设备。')
+        if live.get('scanId') != latest['id']:
+            raise ValueError('最新发现结果已变化，请重新发现设备。')
+        try:
+            scanned_at = datetime.datetime.fromisoformat(result['scannedAt'].replace('Z', '+00:00'))
+            if scanned_at.tzinfo is None:
+                scanned_at = scanned_at.replace(tzinfo=datetime.timezone.utc)
+            age = (datetime.datetime.now(datetime.timezone.utc) - scanned_at.astimezone(datetime.timezone.utc)).total_seconds()
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise ValueError('发现记录时间无法验证，请重新发现设备。') from error
+        if age < -30 or age > DEVICE_CHECK_FRESH_SECONDS:
+            raise ValueError('发现结果已过期，请先重新发现设备。')
+        interface = result.get('interface')
+        if not isinstance(interface, dict):
+            raise ValueError('无法验证设备所属的网络适配器。')
+        interface_id = str(interface.get('id', ''))
+        adapters = self.get_interfaces()
+        adapter = next((item for item in adapters if str(item.get('id', '')) == interface_id), None)
+        if adapter is None:
+            raise ValueError('该发现结果不属于当前连接的网络适配器。')
+        if any(adapter.get(key) != interface.get(key) for key in ('ip', 'prefixLength', 'gateway', 'mac')):
+            raise ValueError('网络连接已变化，请先重新发现设备。')
+        try:
+            local_ip = ipaddress.IPv4Address(adapter.get('ip', ''))
+            scope = ipaddress.IPv4Network(
+                interface.get('scanCidr') or result.get('scope', {}).get('scanCidr') or
+                interface.get('cidr') or result.get('scope', {}).get('cidr'), strict=False)
+            current_scope = ipaddress.IPv4Network(
+                '{}/{}'.format(local_ip, adapter['prefixLength']), strict=False)
+        except (KeyError, ipaddress.AddressValueError, ipaddress.NetmaskValueError, TypeError, ValueError) as error:
+            raise ValueError('无法验证本机或发现范围。') from error
+        device = next((item for item in result.get('devices', [])
+                       if isinstance(item, dict) and item.get('deviceKey') == device_key), None)
+        if device is None:
+            raise KeyError('设备不在该网络的最新发现结果中。')
+        if device.get('kind') == 'self':
+            raise ValueError('不能对本机执行这项检查。')
+        try:
+            target = ipaddress.IPv4Address(device.get('ip') or device.get('id') or '')
+        except (ipaddress.AddressValueError, TypeError) as error:
+            raise ValueError('设备地址无法验证，请重新发现设备。') from error
+        allowed_ranges = (ipaddress.IPv4Network('10.0.0.0/8'),
+                          ipaddress.IPv4Network('172.16.0.0/12'),
+                          ipaddress.IPv4Network('192.168.0.0/16'))
+        local_ips = {item.get('ip') for item in adapters}
+        if (str(target) in local_ips or target.is_loopback or target.is_link_local or
+                target.is_multicast or target.is_reserved or target.is_unspecified or
+                not any(target in allowed for allowed in allowed_ranges) or
+                target not in scope or target not in current_scope or
+                target in (current_scope.network_address, current_scope.broadcast_address) or
+                target in (scope.network_address, scope.broadcast_address)):
+            raise ValueError('目标不在当前已验证的家庭或办公局域网范围内。')
+        return str(target), str(local_ip), result['scanId']
+
+    def start_device_check(self, network_id, device_key, authorized):
+        if authorized is not True:
+            raise ValueError('请先确认你已获得此设备所有者授权。')
+        with self.lock:
+            if self.stopping.is_set() or self.closed:
+                raise ValueError('应用正在退出。')
+            if self.status == 'scanning' or self.device_check['status'] == 'checking':
+                return False
+        with self.persistence_lock:
+            target, source_ip, scan_id = self._resolve_check_target(network_id, device_key)
+            with self.lock:
+                if self.stopping.is_set() or self.closed:
+                    raise ValueError('应用正在退出。')
+                if self.status == 'scanning' or self.device_check['status'] == 'checking':
+                    return False
+                cancel_event = threading.Event()
+                self.device_check_cancel = cancel_event
+                self.device_check = {'status': 'checking', 'completed': 0,
+                                     'total': len(SERVICES), 'results': [],
+                                     'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id}
+                thread = threading.Thread(target=self._run_device_check, args=(target, source_ip, cancel_event),
+                                          daemon=True, name='netspace-device-check')
+                self.device_check_thread = thread
+                try:
+                    thread.start()
+                except Exception:
+                    self.device_check = {'status': 'error', 'completed': 0,
+                                         'total': len(SERVICES), 'results': [],
+                                         'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id}
+                    self.device_check_cancel = None
+                    raise
+        return True
+
+    def _run_device_check(self, target, source_ip, cancel_event):
+        results = []
+        try:
+            for service in SERVICES:
+                if cancel_event.is_set() or self.stopping.is_set():
+                    break
+                try:
+                    outcome = (self.port_probe(target, service['port']) if self.port_probe is not None
+                               else probe_tcp_port(target, service['port'], source_ip=source_ip))
+                    status = outcome.get('status') if isinstance(outcome, dict) else None
+                    if status not in {'open', 'closed', 'no_response', 'unavailable'}:
+                        status = 'unavailable'
+                except Exception:
+                    status = 'unavailable'
+                results.append({'port': service['port'], 'service': service['service'], 'status': status})
+                with self.lock:
+                    if self.device_check_cancel is cancel_event:
+                        self.device_check = {**self.device_check, 'status': 'checking', 'completed': len(results),
+                                             'total': len(SERVICES), 'results': copy.deepcopy(results)}
+            with self.lock:
+                if self.device_check_cancel is cancel_event:
+                    state = 'cancelled' if cancel_event.is_set() or self.stopping.is_set() else 'complete'
+                    self.device_check = {**self.device_check, 'status': state, 'completed': len(results),
+                                         'total': len(SERVICES), 'results': copy.deepcopy(results)}
+                    self.device_check_cancel = None
+        except Exception:
+            LOGGER.exception('Device service check failed')
+            with self.lock:
+                if self.device_check_cancel is cancel_event:
+                    self.device_check = {**self.device_check, 'status': 'error', 'completed': len(results),
+                                         'total': len(SERVICES), 'results': copy.deepcopy(results)}
+                    self.device_check_cancel = None
 
     def monitor_snapshot(self):
         result = self.monitor.snapshot()
@@ -130,6 +285,7 @@ class ScanState:
 
     def close(self):
         self.stopping.set()
+        self.cancel_device_check()
         self.monitor.close()
         # An in-progress scanner can finish later, but cannot save after close.
         with self.persistence_lock:
@@ -145,7 +301,7 @@ class ScanState:
         with self.lock:
             if self.stopping.is_set():
                 raise ValueError('应用正在退出')
-            if self.status == 'scanning':
+            if self.status == 'scanning' or self.device_check['status'] == 'checking':
                 return False
             if self.interfaces is None:
                 self.get_interfaces()
@@ -313,6 +469,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == '/api/health':
             self._respond(200, {'app': 'NetSpace', 'version': VERSION})
+        elif path == '/api/device-check':
+            self._respond(200, self.server.state.device_check_snapshot())
         elif path == '/api/backup':
             if urlsplit(self.path).query:
                 self._respond(400, {'error': '备份接口不接受查询参数'})
@@ -395,7 +553,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not self._trusted():
             return
         path = urlsplit(self.path).path
-        if path not in ('/api/scan', '/api/shutdown', '/api/profile', '/api/events/read', '/api/monitor'):
+        if path not in ('/api/scan', '/api/shutdown', '/api/profile', '/api/events/read',
+                        '/api/monitor', '/api/device-check', '/api/device-check/cancel'):
             self._respond(404, {'error': '接口不存在'})
             return
         try:
@@ -404,7 +563,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ValueError('请求内容为空或过大')
             if self.headers.get_content_type() != 'application/json':
                 raise ValueError('请求需要使用 JSON 格式')
-            data = json.loads(self.rfile.read(length).decode('utf-8'))
+            def reject_duplicate_keys(pairs):
+                output = {}
+                for key, value in pairs:
+                    if key in output:
+                        raise ValueError('请求中包含重复字段')
+                    output[key] = value
+                return output
+
+            data = json.loads(self.rfile.read(length).decode('utf-8'), object_pairs_hook=reject_duplicate_keys)
             if not isinstance(data, dict):
                 raise ValueError('请求格式错误')
         except (ValueError, UnicodeDecodeError) as error:
@@ -417,6 +584,26 @@ class RequestHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         try:
+            if path in ('/api/device-check', '/api/device-check/cancel'):
+                expected_origin = 'http://' + self.headers.get('Host', '').lower()
+                if self.headers.get('Origin') != expected_origin:
+                    self._respond(403, {'error': '请从当前 NetSpace 页面启动这项检查'})
+                    return
+                if path == '/api/device-check/cancel':
+                    if data:
+                        raise ValueError('停止检查请求不应包含额外数据')
+                    cancelled = self.server.state.cancel_device_check()
+                    self._respond(200, {'cancelled': cancelled})
+                    return
+                if set(data) != {'networkId', 'deviceKey', 'authorized'}:
+                    raise ValueError('检查请求字段无效，请刷新页面后重试。')
+                started = self.server.state.start_device_check(
+                    data['networkId'], data['deviceKey'], data['authorized'])
+                if not started:
+                    self._respond(409, {'error': '请等待当前发现或检查任务结束。'})
+                else:
+                    self._respond(202, self.server.state.device_check_snapshot())
+                return
             if path == '/api/profile':
                 network_id, device_key = data.get('networkId'), data.get('deviceKey')
                 if not isinstance(network_id, str) or not network_id or not isinstance(device_key, str) or not device_key:
@@ -447,21 +634,26 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._respond(404, {'error': '设备记录不存在，请先发现设备'})
         except Exception as error:
             LOGGER.exception('Cannot start scan')
-            message = str(error) if path == '/api/scan' else '保存本地记录失败，请检查存储空间后重试'
+            message = (str(error) if path == '/api/scan' else
+                       '无法完成设备检查，请检查授权和最新发现结果后重试。'
+                       if path.startswith('/api/device-check') else
+                       '保存本地记录失败，请检查存储空间后重试')
             self._respond(503, {'error': message})
 
     def do_OPTIONS(self):
         self._respond(405, {'error': '不支持该请求方式'})
 
 
-def create_server(host='127.0.0.1', port=8765, interfaces_provider=None, scanner=None, store=None):
+def create_server(host='127.0.0.1', port=8765, interfaces_provider=None, scanner=None,
+                  store=None, port_probe=None):
     if host != '127.0.0.1':
         raise ValueError('NetSpace only listens on 127.0.0.1')
     if interfaces_provider is None or scanner is None:
         from windows_network import list_interfaces, scan_network
         interfaces_provider = interfaces_provider or list_interfaces
         scanner = scanner or scan_network
-    state = ScanState(interfaces_provider, scanner, store if store is not None else NetworkStore())
+    state = ScanState(interfaces_provider, scanner, store if store is not None else NetworkStore(),
+                      port_probe=port_probe)
     try:
         return NetSpaceServer((host, port), state)
     except Exception:
