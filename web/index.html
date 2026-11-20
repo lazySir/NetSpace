@@ -131,6 +131,7 @@
     <ul id="device-check-results" class="device-check-results" aria-label="服务连接检查结果"></ul>
     <p class="device-check-meaning"><strong>怎么看结果？</strong>“可连接”只代表有服务接受连接，不等于存在漏洞；“拒绝连接”表示本次被明确拒绝；“未响应”无法判断是否开放；“不可用”表示本机或网络无法完成本项检查。端口名称是常见用途，本次不会识别实际运行的软件。</p>
     <details class="device-check-help"><summary>发现不需要的服务后，我该怎么做？</summary><p>先确认设备用途，再到设备自己的管理页面或设置里关闭不使用的远程管理、文件共享等功能，并安装官方更新。不要仅凭端口开放就认定设备被入侵。NetSpace 不会自动修改这些设置。</p></details>
+    <div class="device-check-export"><button id="device-check-export" type="button" class="compact-button" aria-describedby="device-check-export-help" disabled><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>导出检查报告</button><p id="device-check-export-help">结束后可保存中文文本报告，不会再次连接设备。报告包含设备名称、IP 和检查结果，分享前请注意隐私。</p><p id="device-check-export-status" role="status" aria-live="polite"></p></div>
     <div class="device-check-actions"><button id="device-check-close" type="button" class="button button-secondary">关闭</button><button id="device-check-cancel" type="button" class="button button-secondary" disabled>停止本次检查</button><button id="device-check-start" type="button" class="button button-primary" disabled>开始检查这台设备</button></div>
   </dialog>
   <div class="toast" id="toast" role="status" hidden></div>

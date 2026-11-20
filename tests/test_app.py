@@ -71,7 +71,8 @@ class LocalServerTests(unittest.TestCase):
             content_type = response.headers.get('Content-Type', '')
             return response.status, json.loads(body.decode('utf-8')) if 'application/json' in content_type else body
 
-    def save_check_snapshot(self, peer_ip='192.168.50.45', scanned_at=None, cidr='192.168.50.0/24'):
+    def save_check_snapshot(self, peer_ip='192.168.50.45', scanned_at=None, cidr='192.168.50.0/24',
+                            peer_mac=None):
         import datetime
         if scanned_at is None:
             scanned_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
@@ -79,7 +80,8 @@ class LocalServerTests(unittest.TestCase):
                   'devices': [
                       {'id': self.interfaces[0]['ip'], 'ip': self.interfaces[0]['ip'], 'kind': 'self',
                        'hostname': 'TEST-WORKSTATION'},
-                      {'id': peer_ip, 'ip': peer_ip, 'kind': 'device', 'hostname': 'TEST-PEER'},
+                      {'id': peer_ip, 'ip': peer_ip, 'kind': 'device', 'hostname': 'TEST-PEER',
+                       **({'mac': peer_mac} if peer_mac is not None else {})},
                   ],
                   'links': [], 'warnings': [], 'scope': {'cidr': cidr},
                   'scannedAt': scanned_at, 'durationMs': 1}
@@ -97,16 +99,177 @@ class LocalServerTests(unittest.TestCase):
             time.sleep(.01)
         self.fail('device check did not complete')
 
+    def wait_for_check_calls(self, count):
+        for _ in range(100):
+            if len(self.check_calls) >= count:
+                return
+            time.sleep(.01)
+        self.fail('device check did not reach the expected fake probe')
+
+    def test_device_check_requires_the_scan_id_seen_when_authorizing(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        origin = {'Origin': self.base}
+        self.assertEqual(self.request('/api/device-check', body, origin, method='POST')[0], 400)
+        for invalid in (None, True, False, 0, -1, 1.0, '1', [], {}):
+            with self.subTest(scanId=invalid):
+                self.assertEqual(self.request('/api/device-check', {**body, 'scanId': invalid},
+                                              origin, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+        status, check = self.request('/api/device-check', {**body, 'scanId': saved['scanId']},
+                                     origin, method='POST')
+        self.assertEqual(status, 202)
+        self.assertEqual(check['scanId'], saved['scanId'])
+        self.assertEqual(self.wait_for_check()['status'], 'complete')
+
+    def test_old_scan_authorization_cannot_follow_a_mac_to_its_new_address(self):
+        first = self.save_check_snapshot(peer_mac='02:00:00:00:00:45')
+        peer = next(item for item in first['devices'] if item['kind'] == 'device')
+        body = {'networkId': first['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': first['scanId'], 'authorized': True}
+        latest = self.save_check_snapshot(peer_ip='192.168.50.46', peer_mac='02:00:00:00:00:45')
+        current_peer = next(item for item in latest['devices'] if item['kind'] == 'device')
+        self.assertEqual(latest['networkId'], first['networkId'])
+        self.assertEqual(current_peer['deviceKey'], peer['deviceKey'])
+        origin = {'Origin': self.base}
+        self.assertEqual(self.request('/api/device-check', body, origin, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+        self.assertEqual(self.request('/api/device-check', {**body, 'scanId': latest['scanId']},
+                                      origin, method='POST')[0], 202)
+        self.assertEqual(self.wait_for_check()['status'], 'complete')
+        self.assertTrue(all(ip == '192.168.50.46' for ip, _ in self.check_calls))
+
+    def test_device_check_scan_id_must_match_live_and_latest_saved_results(self):
+        first = self.save_check_snapshot()
+        latest = self.save_check_snapshot()
+        peer = next(item for item in latest['devices'] if item['kind'] == 'device')
+        body = {'networkId': latest['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': latest['scanId'], 'authorized': True}
+        with self.server.state.lock:
+            self.server.state.result = first
+        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
+        self.assertEqual(self.check_calls, [])
+
+    def test_invalid_scan_id_is_rejected_even_while_a_check_is_running(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': saved['scanId'], 'authorized': True}
+        origin = {'Origin': self.base}
+        self.check_gate.clear()
+        status, started = self.request('/api/device-check', body, origin, method='POST')
+        self.assertEqual(status, 202)
+        self.wait_for_check_calls(1)
+        for invalid in (None, True, False, 0, -1, 1.0, '1', [], {}):
+            with self.subTest(scanId=invalid):
+                self.assertEqual(self.request('/api/device-check', {**body, 'scanId': invalid},
+                                              origin, method='POST')[0], 400)
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': started['runId']},
+                                      origin, method='POST'), (200, {'cancelled': True}))
+        self.check_gate.set()
+        self.assertEqual(self.wait_for_check()['status'], 'cancelled')
+        self.assertEqual(len(self.check_calls), 1)
+
+    def test_old_run_cancel_cannot_stop_a_repeat_check_of_the_same_device_and_scan(self):
+        self.assertIsNone(self.request('/api/device-check')[1]['runId'])
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': saved['scanId'], 'authorized': True}
+        origin = {'Origin': self.base}
+        status, first = self.request('/api/device-check', body, origin, method='POST')
+        self.assertEqual(status, 202)
+        self.assertRegex(first['runId'], r'^[0-9a-f]{32}$')
+        self.assertEqual(self.wait_for_check()['runId'], first['runId'])
+        previous_calls = len(self.check_calls)
+        self.check_gate.clear()
+
+        def pause_after_first(ip, port):
+            self.check_calls.append((ip, port))
+            if port != 21:
+                self.check_gate.wait(2)
+            return {'status': 'closed'}
+
+        self.server.state.port_probe = pause_after_first
+        status, second = self.request('/api/device-check', body, origin, method='POST')
+        self.assertEqual(status, 202)
+        self.assertRegex(second['runId'], r'^[0-9a-f]{32}$')
+        self.assertNotEqual(second['runId'], first['runId'])
+        self.wait_for_check_calls(previous_calls + 2)
+        cancel_event = self.server.state.device_check_cancel
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': first['runId']},
+                                      origin, method='POST'), (200, {'cancelled': False}))
+        self.assertFalse(cancel_event.is_set())
+        progress = self.request('/api/device-check')[1]
+        self.assertEqual(progress['runId'], second['runId'])
+        self.assertEqual(progress['completed'], 1)
+        self.assertEqual(len(progress['results']), 1)
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': second['runId']},
+                                      origin, method='POST'), (200, {'cancelled': True}))
+        self.check_gate.set()
+        terminal = self.wait_for_check()
+        self.assertEqual(terminal['status'], 'cancelled')
+        self.assertEqual(terminal['runId'], second['runId'])
+        self.assertEqual(len(self.check_calls), previous_calls + 2)
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': second['runId']},
+                                      origin, method='POST'), (200, {'cancelled': False}))
+
+    def test_cancel_requires_only_a_well_formed_run_id_and_cannot_stop_without_it(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': saved['scanId'], 'authorized': True}
+        origin = {'Origin': self.base}
+        self.check_gate.clear()
+        status, check = self.request('/api/device-check', body, origin, method='POST')
+        self.assertEqual(status, 202)
+        self.wait_for_check_calls(1)
+        cancel_event = self.server.state.device_check_cancel
+        invalid_bodies = [{}, {'runId': None}, {'runId': True}, {'runId': 42},
+                          {'runId': 'A' * 32}, {'runId': 'a' * 31}, {'runId': 'g' * 32},
+                          {'runId': 'a' * 32 + '\n'}, {'runId': ['a' * 32]},
+                          {'runId': check['runId'], 'extra': True}]
+        for invalid in invalid_bodies:
+            with self.subTest(body=invalid):
+                self.assertEqual(self.request('/api/device-check/cancel', invalid, origin, method='POST')[0], 400)
+                self.assertFalse(cancel_event.is_set())
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': check['runId']},
+                                      origin, method='POST'), (200, {'cancelled': True}))
+        self.check_gate.set()
+        self.assertEqual(self.wait_for_check()['status'], 'cancelled')
+        self.assertEqual(len(self.check_calls), 1)
+
+    def test_shutdown_cancels_current_check_internally_without_a_public_cancel_bypass(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'],
+                'scanId': saved['scanId'], 'authorized': True}
+        self.check_gate.clear()
+        status, started = self.request('/api/device-check', body, {'Origin': self.base}, method='POST')
+        self.assertEqual(status, 202)
+        self.wait_for_check_calls(1)
+        cancel_event = self.server.state.device_check_cancel
+        self.assertEqual(self.request('/api/shutdown', {}, method='POST')[0], 200)
+        self.assertTrue(cancel_event.is_set())
+        self.check_gate.set()
+        self.server.state.device_check_thread.join(1)
+        terminal = self.server.state.device_check_snapshot()
+        self.assertEqual(terminal['status'], 'cancelled')
+        self.assertEqual(terminal['runId'], started['runId'])
+        self.assertEqual(len(self.check_calls), 1)
+
     def test_interfaces_and_initial_state(self):
         status, health = self.request('/api/health')
         self.assertEqual(status, 200)
-        self.assertEqual(health['version'], '1.13.0')
+        self.assertEqual(health['version'], '1.14.0')
         status, body = self.request('/api/interfaces')
         self.assertEqual(status, 200)
         self.assertEqual(body['interfaces'][0]['id'], '7')
         status, state = self.request('/api/state')
         self.assertEqual(state['status'], 'idle')
         self.assertIsNone(state['result'])
+        self.assertIsNone(state['deviceCheck']['runId'])
 
     def test_backup_download_is_integral_validated_and_keeps_internal_paths_private(self):
         store = self.server.state.store
@@ -201,7 +364,7 @@ class LocalServerTests(unittest.TestCase):
     def test_device_check_requires_same_origin_explicit_permission_and_real_saved_peer(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         origin = {'Origin': self.base}
         self.assertEqual(self.request('/api/device-check', body, method='POST')[0], 403)
         self.assertEqual(self.request('/api/device-check', body, {'Origin': 'https://other.example'}, method='POST')[0], 403)
@@ -227,25 +390,25 @@ class LocalServerTests(unittest.TestCase):
         stale = (datetime.now(timezone.utc) - timedelta(minutes=7)).isoformat()
         saved = self.save_check_snapshot(scanned_at=stale)
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         headers = {'Origin': self.base}
         self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
 
         saved = self.save_check_snapshot(peer_ip=self.interfaces[0]['ip'])
         local = next(item for item in saved['devices'] if item['kind'] == 'self')
-        body = {'networkId': saved['networkId'], 'deviceKey': local['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': local['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
 
         saved = self.save_check_snapshot(peer_ip='192.168.51.45')
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
         self.assertEqual(self.check_calls, [])
 
     def test_device_check_rejects_network_change_disconnected_adapter_and_historical_record(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         headers = {'Origin': self.base}
         self.interfaces[0]['ip'] = '192.168.60.20'
         self.assertEqual(self.request('/api/device-check', body, headers, method='POST')[0], 400)
@@ -260,19 +423,19 @@ class LocalServerTests(unittest.TestCase):
     def test_device_check_rejects_network_broadcast_and_every_local_adapter_address(self):
         saved = self.save_check_snapshot(peer_ip='192.168.50.255')
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
         saved = self.save_check_snapshot()
         self.interfaces.append({'id': '8', 'ip': '192.168.50.45', 'prefixLength': 24, 'gateway': '192.168.50.1'})
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
         self.assertEqual(self.check_calls, [])
 
     def test_device_check_cannot_start_while_discovering(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.gate.clear()
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 202)
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 409)
@@ -281,7 +444,7 @@ class LocalServerTests(unittest.TestCase):
     def test_device_check_default_probe_receives_validated_source_address(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.server.state.port_probe = None
         with mock.patch.object(self.app, 'probe_tcp_port', return_value={'status': 'open'}) as probe:
             self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
@@ -295,12 +458,12 @@ class LocalServerTests(unittest.TestCase):
     def test_device_check_rejects_future_records_and_non_lan_addresses(self):
         saved = self.save_check_snapshot(scanned_at='2099-01-01T00:00:00Z')
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
         for address in ('8.8.8.8', '127.0.0.2', '169.254.1.2', '224.0.0.1'):
             saved = self.save_check_snapshot(peer_ip=address)
             peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-            body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+            body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
             self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 400)
         self.assertEqual(self.check_calls, [])
 
@@ -317,22 +480,28 @@ class LocalServerTests(unittest.TestCase):
     def test_device_check_worker_failure_allows_a_fresh_authorized_retry(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         with mock.patch.object(self.app.threading.Thread, 'start', side_effect=RuntimeError('cannot start')):
             with self.assertRaises(RuntimeError):
-                self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], True)
-        self.assertEqual(self.server.state.device_check_snapshot()['status'], 'error')
+                self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], saved['scanId'], True)
+        failed = self.server.state.device_check_snapshot()
+        self.assertEqual(failed['status'], 'error')
+        self.assertRegex(failed['runId'], r'^[0-9a-f]{32}$')
         self.assertFalse(self.server.state.is_scanning())
         self.assertEqual(self.check_calls, [])
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
-        self.assertEqual(self.wait_for_check()['status'], 'complete')
+        completed = self.wait_for_check()
+        self.assertEqual(completed['status'], 'complete')
+        self.assertRegex(completed['runId'], r'^[0-9a-f]{32}$')
+        self.assertNotEqual(completed['runId'], failed['runId'])
 
     def test_close_stops_device_check_before_the_next_probe(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.check_gate.clear()
-        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+        status, started = self.request('/api/device-check', body, {'Origin': self.base}, method='POST')
+        self.assertEqual(status, 202)
         for _ in range(100):
             if self.check_calls:
                 break
@@ -342,18 +511,22 @@ class LocalServerTests(unittest.TestCase):
         self.server.state.device_check_thread.join(1)
         self.assertEqual(len(self.check_calls), 1)
         self.assertEqual(self.server.state.device_check_snapshot()['status'], 'cancelled')
+        self.assertEqual(self.server.state.device_check_snapshot()['runId'], started['runId'])
         with self.assertRaises(ValueError):
-            self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], True)
+            self.server.state.start_device_check(saved['networkId'], peer['deviceKey'], saved['scanId'], True)
 
     def test_device_check_is_single_task_cancellable_and_mutually_exclusive_with_discovery(self):
         saved = self.save_check_snapshot()
         peer = next(item for item in saved['devices'] if item['kind'] == 'device')
-        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'authorized': True}
+        body = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'], 'scanId': saved['scanId'], 'authorized': True}
         self.check_gate.clear()
-        self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 202)
+        status, started = self.request('/api/device-check', body, {'Origin': self.base}, method='POST')
+        self.assertEqual(status, 202)
         self.assertEqual(self.request('/api/device-check', body, {'Origin': self.base}, method='POST')[0], 409)
         self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 409)
-        self.assertEqual(self.request('/api/device-check/cancel', {}, {'Origin': self.base}, method='POST')[0], 200)
+        self.wait_for_check_calls(1)
+        self.assertEqual(self.request('/api/device-check/cancel', {'runId': started['runId']},
+                                      {'Origin': self.base}, method='POST'), (200, {'cancelled': True}))
         self.check_gate.set()
         result = self.wait_for_check()
         self.assertEqual(result['status'], 'cancelled')

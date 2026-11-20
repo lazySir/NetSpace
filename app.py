@@ -19,6 +19,7 @@ import tempfile
 import threading
 from concurrent.futures import CancelledError
 import urllib.request
+import uuid
 from urllib.parse import parse_qs, unquote, urlsplit
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -29,7 +30,7 @@ from network_store import NetworkStore
 from device_check import SERVICES, probe_tcp_port
 
 
-VERSION = '1.13.0'
+VERSION = '1.14.0'
 DEVICE_CHECK_FRESH_SECONDS = 300
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
@@ -73,7 +74,7 @@ class ScanState:
         self.store = store
         self.port_probe = port_probe
         self.device_check = {'status': 'idle', 'completed': 0, 'total': len(SERVICES), 'results': [],
-                             'networkId': None, 'deviceKey': None, 'scanId': None}
+                             'networkId': None, 'deviceKey': None, 'scanId': None, 'runId': None}
         self.device_check_cancel = None
         self.device_check_thread = None
         self.persistence_lock = threading.RLock()
@@ -104,16 +105,20 @@ class ScanState:
         with self.lock:
             return self.status == 'scanning' or self.device_check['status'] == 'checking'
 
-    def cancel_device_check(self):
+    def cancel_device_check(self, run_id):
+        if not isinstance(run_id, str) or re.fullmatch(r'[0-9a-f]{32}', run_id) is None:
+            raise ValueError('停止检查请求缺少有效的运行标识，请刷新页面后重试。')
         with self.lock:
-            if self.device_check['status'] != 'checking' or self.device_check_cancel is None:
+            if (self.device_check['status'] != 'checking' or self.device_check_cancel is None or
+                    self.device_check['runId'] != run_id):
                 return False
             self.device_check_cancel.set()
             return True
 
-    def _resolve_check_target(self, network_id, device_key):
+    def _resolve_check_target(self, network_id, device_key, expected_scan_id):
         if (not isinstance(network_id, str) or not 1 <= len(network_id) <= 80 or
-                not isinstance(device_key, str) or re.fullmatch(r'[0-9a-f]{32}', device_key) is None):
+                not isinstance(device_key, str) or re.fullmatch(r'[0-9a-f]{32}', device_key) is None or
+                type(expected_scan_id) is not int or expected_scan_id <= 0):
             raise ValueError('请选择本次发现列表中的设备。')
         with self.lock:
             live = copy.deepcopy(self.result)
@@ -127,7 +132,7 @@ class ScanState:
         if (not isinstance(result, dict) or result.get('networkId') != network_id or
                 result.get('scanId') != latest['id']):
             raise KeyError('最新发现记录不可用，请重新发现设备。')
-        if live.get('scanId') != latest['id']:
+        if live.get('scanId') != expected_scan_id or latest['id'] != expected_scan_id:
             raise ValueError('最新发现结果已变化，请重新发现设备。')
         try:
             scanned_at = datetime.datetime.fromisoformat(result['scannedAt'].replace('Z', '+00:00'))
@@ -180,35 +185,31 @@ class ScanState:
             raise ValueError('目标不在当前已验证的家庭或办公局域网范围内。')
         return str(target), str(local_ip), result['scanId']
 
-    def start_device_check(self, network_id, device_key, authorized):
+    def start_device_check(self, network_id, device_key, scan_id, authorized):
         if authorized is not True:
             raise ValueError('请先确认你已获得此设备所有者授权。')
-        with self.lock:
-            if self.stopping.is_set() or self.closed:
-                raise ValueError('应用正在退出。')
-            if self.status == 'scanning' or self.device_check['status'] == 'checking':
-                return False
+        if type(scan_id) is not int or scan_id <= 0:
+            raise ValueError('发现记录标识无效，请刷新页面后重试。')
         with self.persistence_lock:
-            target, source_ip, scan_id = self._resolve_check_target(network_id, device_key)
             with self.lock:
                 if self.stopping.is_set() or self.closed:
                     raise ValueError('应用正在退出。')
                 if self.status == 'scanning' or self.device_check['status'] == 'checking':
                     return False
+                target, source_ip, scan_id = self._resolve_check_target(network_id, device_key, scan_id)
                 cancel_event = threading.Event()
                 self.device_check_cancel = cancel_event
                 self.device_check = {'status': 'checking', 'completed': 0,
                                      'total': len(SERVICES), 'results': [],
-                                     'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id}
+                                     'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id,
+                                     'runId': uuid.uuid4().hex}
                 thread = threading.Thread(target=self._run_device_check, args=(target, source_ip, cancel_event),
                                           daemon=True, name='netspace-device-check')
                 self.device_check_thread = thread
                 try:
                     thread.start()
                 except Exception:
-                    self.device_check = {'status': 'error', 'completed': 0,
-                                         'total': len(SERVICES), 'results': [],
-                                         'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id}
+                    self.device_check = {**self.device_check, 'status': 'error'}
                     self.device_check_cancel = None
                     raise
         return True
@@ -285,7 +286,9 @@ class ScanState:
 
     def close(self):
         self.stopping.set()
-        self.cancel_device_check()
+        with self.lock:
+            if self.device_check_cancel is not None:
+                self.device_check_cancel.set()
         self.monitor.close()
         # An in-progress scanner can finish later, but cannot save after close.
         with self.persistence_lock:
@@ -579,6 +582,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         if path == '/api/shutdown':
             self.server.state.stopping.set()
+            with self.server.state.lock:
+                if self.server.state.device_check_cancel is not None:
+                    self.server.state.device_check_cancel.set()
             self.server.state.monitor.close()
             self._respond(200, {'status': 'stopped'})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -590,15 +596,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                     self._respond(403, {'error': '请从当前 NetSpace 页面启动这项检查'})
                     return
                 if path == '/api/device-check/cancel':
-                    if data:
-                        raise ValueError('停止检查请求不应包含额外数据')
-                    cancelled = self.server.state.cancel_device_check()
+                    if set(data) != {'runId'}:
+                        raise ValueError('停止检查请求字段无效，请刷新页面后重试。')
+                    cancelled = self.server.state.cancel_device_check(data['runId'])
                     self._respond(200, {'cancelled': cancelled})
                     return
-                if set(data) != {'networkId', 'deviceKey', 'authorized'}:
+                if set(data) != {'networkId', 'deviceKey', 'scanId', 'authorized'}:
                     raise ValueError('检查请求字段无效，请刷新页面后重试。')
                 started = self.server.state.start_device_check(
-                    data['networkId'], data['deviceKey'], data['authorized'])
+                    data['networkId'], data['deviceKey'], data['scanId'], data['authorized'])
                 if not started:
                     self._respond(409, {'error': '请等待当前发现或检查任务结束。'})
                 else:

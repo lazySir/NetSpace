@@ -20,7 +20,8 @@ function snapshot(adapter, networkId, scanId) {
   ];
   return { networkId, scanId, interface: adapter, devices, links: [{ source: devices[0].id, target: devices[1].id }], scannedAt: new Date().toISOString(), durationMs: 12, scope: { cidr: adapter.cidr, scanCidr: adapter.scanCidr, targetCount: 253 }, warnings: [] };
 }
-function checking(networkId = 'test-network-A', deviceKey = 'nas', scanId = 1) { return { status: 'checking', completed: 0, total: 7, results: [], networkId, deviceKey, scanId }; }
+let runSequence = 0;
+function checking(networkId = 'test-network-A', deviceKey = 'nas', scanId = 1) { return { status: 'checking', completed: 0, total: 7, results: [], networkId, deviceKey, scanId, runId: (++runSequence).toString(16).padStart(32, '0') }; }
 const allResults = [
   { port: 21, service: 'FTP', status: 'closed' }, { port: 22, service: 'SSH', status: 'open' },
   { port: 23, service: 'Telnet', status: 'closed' }, { port: 80, service: 'HTTP', status: 'open' },
@@ -43,7 +44,7 @@ async function run() {
   let browser;
   try {
     browser = await chromium.launch({ executablePath: process.env.NETSPACE_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe', headless: true, args: ['--use-angle=swiftshader', '--enable-webgl', '--ignore-gpu-blocklist'] });
-    const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce' });
+    const context = await browser.newContext({ viewport: { width: 1600, height: 1100 }, reducedMotion: 'reduce', acceptDownloads: true });
     await context.addInitScript(() => { const clock = Date.now.bind(Date); let offset = 0; Date.now = () => clock() + offset; window.setDeviceCheckTimeOffset = value => { offset = value; }; });
     const page = await context.newPage(); const errors = [], external = [], posts = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -51,7 +52,8 @@ async function run() {
     const a = snapshot(adapters[0], 'test-network-A', 1), b = snapshot(adapters[1], 'test-network-B', 2);
     const old = { ...a, scanId: 3, scannedAt: '2026-01-01T00:00:00Z' };
     let live = a, scanStatus = 'complete', check = { status: 'idle', completed: 0, total: 7, results: [], networkId: null, deviceKey: null };
-    let failNext = null, delayNextPost = false, releasePost = null, checkReads = 0;
+    let failNext = null, delayNextPost = false, releasePost = null, checkReads = 0, replaceOnCancel = null;
+    let holdNextCheckRead = false, releaseCheckRead = null;
     await context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url()), method = request.method();
       if (/^https?:$/.test(url.protocol) && url.origin !== base) return route.abort('blockedbyclient');
@@ -66,11 +68,23 @@ async function run() {
       if (url.pathname === '/api/history/3') return respond({ result: old });
       if (url.pathname === '/api/devices') return respond({ devices: live.devices });
       if (url.pathname === '/api/events') return respond({ events: [], unreadCount: 0, notificationsEnabled: true });
-      if (url.pathname === '/api/device-check/cancel') { check = { ...check, status: 'cancelled' }; return respond({ cancelled: true }); }
+      if (url.pathname === '/api/device-check/cancel') {
+        if (replaceOnCancel) { check = replaceOnCancel; replaceOnCancel = null; }
+        const matches = request.postDataJSON().runId === check.runId && check.status === 'checking';
+        if (matches) check = { ...check, status: 'cancelled' };
+        return respond({ cancelled: matches });
+      }
       if (url.pathname === '/api/device-check') {
-        if (method === 'GET') { checkReads++; return respond(check); }
+        if (method === 'GET') {
+          checkReads++;
+          const held = { ...check, results: [...check.results] };
+          if (holdNextCheckRead) { holdNextCheckRead = false; await new Promise(resolve => { releaseCheckRead = resolve; }); }
+          return respond(held);
+        }
         if (failNext) { const failure = failNext; failNext = null; return respond({ error: failure.error }, failure.status); }
-        const body = request.postDataJSON(); check = checking(body.networkId, body.deviceKey, live.scanId);
+        const body = request.postDataJSON();
+        if (body.scanId !== live.scanId) return respond({ error: '设备记录已更新，请重新打开检查窗口' }, 409);
+        check = checking(body.networkId, body.deviceKey, body.scanId);
         if (delayNextPost) { delayNextPost = false; const held = { ...check }; await new Promise(resolve => { releasePost = resolve; }); return respond(held, 202); }
         return respond(check, 202);
       }
@@ -85,6 +99,8 @@ async function run() {
     await page.locator('#device-check-open').click();
     const dialog = page.getByRole('dialog', { name: '检查这台设备的服务' });
     await dialog.waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#device-check-export').count(), 1, 'the check dialog should offer a text report without starting another check');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), true, 'no report is available before results exist');
     assert.equal(await page.locator('#device-check-consent').isChecked(), false);
     assert.equal(await page.locator('#device-check-start').isDisabled(), true);
     await page.locator('#device-check-consent').check();
@@ -95,9 +111,10 @@ async function run() {
     assert.equal(await page.locator('#device-check-consent').isChecked(), false, 'every opening must require fresh consent');
     await page.locator('#device-check-consent').check(); await page.locator('#device-check-start').click();
     await page.waitForFunction(() => document.querySelector('#device-check-cancel').disabled === false);
-    assert.deepEqual(posts[0].body, { networkId: 'test-network-A', deviceKey: 'nas', authorized: true });
+    assert.deepEqual(posts[0].body, { networkId: 'test-network-A', deviceKey: 'nas', scanId: 1, authorized: true });
     assert.equal(posts[0].origin, base, 'the explicit POST must carry the same browser Origin');
     assert.equal(await page.locator('#device-check-start').isDisabled(), true, 'a running check cannot be started twice');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), true, 'running checks cannot be exported as a final report');
     check = { ...check, status: 'complete', completed: 7, results: allResults };
     await page.waitForFunction(() => document.querySelectorAll('#device-check-results li').length === 7);
     assert.match(await page.locator('#device-check-results').innerText(), /可连接/);
@@ -106,12 +123,33 @@ async function run() {
     assert.equal(await page.locator('#detail-ip').innerText(), '192.0.2.30', 'service results must not replace the device address');
     assert.equal(await page.locator('#device-check-consent').isChecked(), false, 'consent is consumed by one run');
     assert.equal(posts.filter(x => x.path === '/api/device-check').length, 1, 'polling must only read check state');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), false);
+    const postsBeforeReport = posts.length;
+    const completeDownloadPromise = page.waitForEvent('download');
+    await page.locator('#device-check-export').click();
+    const completeDownload = await completeDownloadPromise;
+    assert.match(completeDownload.suggestedFilename(), /^NetSpace-service-check-\d{4}-\d{2}-\d{2}T[\d-]+Z\.txt$/, 'report names use a fixed prefix and generated date, never device data');
+    await completeDownload.saveAs(path.join(output, 'netspace-service-check-complete.txt'));
+    const reportBytes = fs.readFileSync(path.join(output, 'netspace-service-check-complete.txt'));
+    assert.equal(reportBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'Windows text report includes a UTF-8 BOM');
+    const report = reportBytes.toString('utf8');
+    assert.match(report, /NetSpace 服务检查报告/);
+    assert.match(report, /192\.0\.2\.30/);
+    assert.match(report, /示例存储/);
+    assert.match(report, /7 \/ 7/);
+    assert.match(report, /TCP 22[^\r\n]*可连接/);
+    assert.match(report, /TCP 443[^\r\n]*未响应/);
+    assert.match(report, /报告生成时间/);
+    assert.match(report, /报告生成时间（不是检查时间）：[0-9]{4}-[0-9]{2}-[0-9]{2}T/);
+    assert.match(report, /不是检查时间/);
+    assert.match(report, /不等于.*漏洞/);
+    assert.equal(posts.length, postsBeforeReport, 'exporting a report must not issue a POST or start another check');
     await page.evaluate(() => { window.checkResultMutations = 0; const observer = new MutationObserver(records => { window.checkResultMutations += records.length; }); for (const id of ['device-check-status', 'device-check-results']) observer.observe(document.getElementById(id), { childList: true, subtree: true, characterData: true }); });
     await page.waitForTimeout(1200);
     assert.equal(await page.evaluate(() => window.checkResultMutations), 0, 'an unchanged completed check must not repeatedly announce its status or replace result rows');
-    await page.screenshot({ path: path.join(images, 'netspace-device-check.png') });
+    await page.screenshot({ path: path.join(images, 'netspace-device-check-report.png') });
     await page.setViewportSize({ width: 320, height: 900 });
-    await page.screenshot({ path: path.join(images, 'netspace-device-check-320.png') });
+    await page.screenshot({ path: path.join(images, 'netspace-device-check-report-320.png') });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'dialog must fit a 320 px screen');
     assert.equal(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth), true, 'dialog content must wrap within its panel');
     assert.equal(await page.evaluate(() => { const entry = document.querySelector('.device-check-entry').getBoundingClientRect(); const panel = document.querySelector('#detail-content').getBoundingClientRect(); return entry.width > panel.width * .8; }), true, 'the new check entry must span the mobile details panel');
@@ -125,9 +163,33 @@ async function run() {
     await page.waitForTimeout(1100);
     assert.equal(await dialog.isVisible(), true, 'crossing the freshness deadline must not hide a running check or its cancel action');
     assert.equal(await page.locator('#device-check-cancel').isDisabled(), false);
+    const staleRunId = check.runId;
+    check = { ...check, status: 'complete', completed: 7, results: allResults };
+    holdNextCheckRead = true;
+    for (let n = 0; !releaseCheckRead && n < 100; n++) await page.waitForTimeout(20);
+    assert.ok(releaseCheckRead, 'hold an old completed response while a newer task starts');
+    const replacement = { ...checking(), completed: 2, results: allResults.slice(0, 2) };
+    replaceOnCancel = replacement;
+    await page.locator('#device-check-cancel').click();
+    await page.waitForFunction(() => !document.querySelector('#device-check-cancel').disabled && document.querySelector('#device-check-status').textContent.includes('2 / 7'));
+    assert.equal(check.status, 'checking', 'a stale stop action must not cancel a newer run for the same device and scan');
+    assert.deepEqual(posts.find(x => x.path === '/api/device-check/cancel').body, { runId: staleRunId });
+    releaseCheckRead(); releaseCheckRead = null;
+    await page.waitForTimeout(150);
+    assert.ok((await page.locator('#device-check-status').innerText()).includes('正在检查：2 / 7'), 'a delayed result for an old run must not replace the newer run');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), true, 'an old completed response cannot enable a report for the newer running task');
+    assert.equal(await page.locator('#device-check-cancel').isDisabled(), false, 'the newer task remains cancellable after an old response arrives');
     await page.locator('#device-check-cancel').click();
     await page.waitForFunction(() => document.querySelector('#device-check-status').textContent.includes('已取消'));
-    assert.deepEqual(posts.find(x => x.path === '/api/device-check/cancel').body, {});
+    assert.deepEqual(posts.filter(x => x.path === '/api/device-check/cancel').at(-1).body, { runId: replacement.runId });
+    const cancelledDownloadPromise = page.waitForEvent('download');
+    await page.locator('#device-check-export').click();
+    const cancelledDownload = await cancelledDownloadPromise;
+    await cancelledDownload.saveAs(path.join(output, 'netspace-service-check-cancelled.txt'));
+    const partialReport = fs.readFileSync(path.join(output, 'netspace-service-check-cancelled.txt'), 'utf8');
+    assert.match(partialReport, /已取消/);
+    assert.match(partialReport, /2 \/ 7/);
+    assert.match(partialReport, /TCP 23[^\r\n]*未检查/);
     await page.locator('#device-check-close').click();
     await page.evaluate(() => window.setDeviceCheckTimeOffset(0));
     await page.locator('#device-list button[data-device-id="192.0.2.20"]').click();
@@ -155,6 +217,7 @@ async function run() {
     await page.locator('#device-list button[data-device-id="198.51.100.30"]').click();
     await page.locator('#device-check-open').click();
     assert.equal(await page.locator('#device-check-results li').count(), 0, 'previous network results must stay hidden');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), true, 'previous network results cannot be exported for another target');
     await page.locator('#device-check-close').click();
     await page.locator('#demo-toggle').click();
     assert.equal(await page.locator('#device-check-open').isDisabled(), true, 'demo never supports real checks');
@@ -177,6 +240,7 @@ async function run() {
     await page.locator('#device-list button[data-device-id="192.0.2.31"]').click();
     await page.locator('#device-check-open').click();
     assert.equal(await page.locator('#device-check-results li').count(), 0, 'a result for a previous scan must not follow a stable device key to a new address');
+    assert.equal(await page.locator('#device-check-export').isDisabled(), true, 'previous snapshot results cannot be exported for a changed IP');
     await page.locator('#device-check-dismiss').click();
     live = { ...live, scannedAt: '2026-01-01T00:00:00Z' };
     await page.waitForFunction(() => document.querySelector('#device-check-availability').textContent.includes('5 分钟'));
@@ -192,7 +256,7 @@ async function run() {
     assert.equal(posts.filter(x => x.path === '/api/scan').length, 0, 'the fixture must never request LAN discovery');
     assert.ok(checkReads > 0, 'running checks must refresh status with GET');
     assert.deepEqual(external, []); assert.deepEqual(unexpectedApi, []); assert.deepEqual(errors, []);
-    console.log('Device check UI passed: explicit single-run consent, cancellation, plain results, stale-target isolation, disabled views, same-origin POST and 320 px layout; all APIs mocked, no scans or target connections.');
+    console.log('Device check UI passed: explicit consent, scan-bound starts, run-bound cancellation, delayed old-run isolation, complete/partial text downloads, expiry, disabled views, same-origin POST and 320 px layout; all APIs mocked, no scans or target connections.');
   } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

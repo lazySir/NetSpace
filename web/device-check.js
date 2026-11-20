@@ -1,12 +1,15 @@
+import { buildDeviceCheckReport } from './device-check-report.js';
+
 const PORTS = new Map([[21, 'FTP 文件传输'], [22, 'SSH 远程管理'], [23, 'Telnet 远程管理'], [80, 'HTTP 网页'], [443, 'HTTPS 加密网页'], [445, 'SMB 文件共享'], [3389, 'RDP 远程桌面']]);
 const RESULT_LABELS = { open: '可连接', closed: '拒绝连接', no_response: '未响应', unavailable: '不可用' };
-const EMPTY = { status: 'idle', completed: 0, total: 7, results: [], networkId: null, deviceKey: null, scanId: null };
+const EMPTY = { status: 'idle', completed: 0, total: 7, results: [], networkId: null, deviceKey: null, scanId: null, runId: null };
+const validRunId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 
 // The server resolves a saved device identifier. The browser never supplies a target address or port.
 export function createDeviceCheck({ ui, api, readContext, rerender }) {
   let state = { ...EMPTY }, target = null, selection = '', timer = null;
   let starting = false, cancelling = false, destroyed = false, ownRun = false;
-  let viewGeneration = 0, taskGeneration = 0, error = '', resultSignature = '';
+  let viewGeneration = 0, taskGeneration = 0, error = '', resultSignature = '', exportNotice = '';
   const dialog = ui['device-check-dialog'];
   function text(id, value) { if (ui[id].textContent !== value) ui[id].textContent = value; }
 
@@ -21,16 +24,16 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
     else if (current.historical) reason = '历史快照仅供查看，请返回当前网络。';
     else if (current.booting) reason = '正在连接本机服务，请稍候。';
     else if (current.scanning) reason = '正在发现设备，完成后才能开始检查。';
-    else if (!result?.networkId || !device?.deviceKey || !current.current) reason = '请先在当前网络发现设备，再选择一台其他设备。';
+    else if (!result?.networkId || !Number.isSafeInteger(result.scanId) || result.scanId <= 0 || !device?.deviceKey || !current.current) reason = '请先在当前网络发现设备，再选择一台其他设备。';
     else if (device.kind === 'self') reason = '这里检查其他设备，请在列表中选择路由器或另一台设备。';
     else if (!Number.isFinite(age) || age < -30000 || age > 300000) { reason = '设备记录已超过 5 分钟，请重新发现设备后再检查。'; expiryOnly = true; }
-    const matches = Boolean(device?.deviceKey && result?.networkId && state.networkId === result.networkId && state.deviceKey === device.deviceKey && state.scanId === result.scanId);
+    const matches = Boolean(device?.deviceKey && result?.networkId && Number.isSafeInteger(result.scanId) && result.scanId > 0 && state.networkId === result.networkId && state.deviceKey === device.deviceKey && state.scanId === result.scanId);
     if (!reason && state.status === 'checking' && !matches) reason = '另一台设备正在检查，请等待本次检查结束。';
     const viewReason = expiryOnly && matches && state.status !== 'idle' ? '' : reason;
     return { ...current, identity, reason, viewReason, matches };
   }
   function close() {
-    viewGeneration++; target = null; error = '';
+    viewGeneration++; target = null; error = ''; exportNotice = '';
     ui['device-check-consent'].checked = false;
     if (dialog.open) dialog.close();
   }
@@ -43,12 +46,12 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
     ui['device-check-open'].disabled = Boolean(current.viewReason) || starting;
     text('device-check-open', current.matches && state.status === 'checking' ? '查看检查进度' : current.matches && state.status !== 'idle' ? '查看上次检查结果' : '了解并检查');
     text('device-check-availability', current.reason && !current.viewReason ? '可查看本次结果；开始新的检查前，请重新发现设备。' : current.reason || '只检查你主动选择的这一台；不会自动运行。');
-    const matching = Boolean(target && current.matches && target.networkId === state.networkId && target.deviceKey === state.deviceKey);
+    const matching = Boolean(target && current.matches && target.networkId === state.networkId && target.deviceKey === state.deviceKey && target.scanId === state.scanId);
     const checking = matching && state.status === 'checking';
     ui['device-check-consent'].disabled = Boolean(current.reason) || starting || checking || cancelling || !target;
     ui['device-check-start'].disabled = Boolean(current.reason) || !target || !ui['device-check-consent'].checked || starting || checking || cancelling || state.status === 'checking';
     ui['device-check-start'].textContent = starting ? '正在开始…' : '开始检查这台设备';
-    ui['device-check-cancel'].disabled = !checking || starting || cancelling;
+    ui['device-check-cancel'].disabled = !checking || !validRunId(state.runId) || starting || cancelling;
     ui['device-check-cancel'].textContent = cancelling ? '正在停止…' : '停止本次检查';
     text('device-check-error', error); ui['device-check-error'].hidden = !error;
     const completed = matching ? Math.max(0, Math.min(7, Number(state.completed) || 0)) : 0;
@@ -62,9 +65,11 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
     const results = matching && Array.isArray(state.results) ? state.results : [];
     const rows = [];
     for (const [port, label] of PORTS) {
-      const result = results.find(item => item.port === port && Object.hasOwn(RESULT_LABELS, item.status));
+      const result = results.find(item => item && item.port === port && Object.hasOwn(RESULT_LABELS, item.status));
       if (result) rows.push([port, label, result.status]);
     }
+    ui['device-check-export'].disabled = Boolean(current.viewReason) || !matching || starting || cancelling || !['complete', 'cancelled', 'error'].includes(state.status) || !rows.length;
+    text('device-check-export-status', exportNotice);
     const signature = JSON.stringify(rows);
     if (resultSignature === signature) return;
     resultSignature = signature; ui['device-check-results'].replaceChildren();
@@ -84,16 +89,16 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
   }
   function schedule() {
     clearTimeout(timer);
-    if (!destroyed && !readContext().stopped && state.status === 'checking') timer = setTimeout(poll, 450);
+    if (!destroyed && !cancelling && !readContext().stopped && state.status === 'checking') timer = setTimeout(poll, 450);
   }
   async function poll() {
-    if (destroyed || readContext().stopped || state.status !== 'checking') return;
-    const generation = taskGeneration;
+    if (destroyed || cancelling || readContext().stopped || state.status !== 'checking') return;
+    const generation = taskGeneration, runId = state.runId;
     try {
       const value = await api('/api/device-check');
-      if (!destroyed && generation === taskGeneration && !starting) update(value);
+      if (!destroyed && generation === taskGeneration && runId === state.runId && !starting && !cancelling) update(value);
     } catch (failure) {
-      if (destroyed || generation !== taskGeneration) return;
+      if (destroyed || generation !== taskGeneration || runId !== state.runId || cancelling) return;
       if (dialog.open) { error = '暂时无法读取进度：' + failure.message + ' 可关闭窗口后重新查看。'; sync(); }
       clearTimeout(timer); timer = setTimeout(poll, 2000);
     }
@@ -102,9 +107,9 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
     const current = context();
     if (destroyed || starting || state.status === 'checking' || current.reason || !target || target.identity !== current.identity || !ui['device-check-consent'].checked) return;
     const selected = { ...target }, view = viewGeneration, generation = ++taskGeneration;
-    starting = true; ownRun = true; state = { ...EMPTY }; error = ''; ui['device-check-consent'].checked = false; sync(); rerender();
+    starting = true; ownRun = true; state = { ...EMPTY }; error = ''; exportNotice = ''; ui['device-check-consent'].checked = false; sync(); rerender();
     try {
-      const response = await api('/api/device-check', { method: 'POST', body: JSON.stringify({ networkId: selected.networkId, deviceKey: selected.deviceKey, authorized: true }) });
+      const response = await api('/api/device-check', { method: 'POST', body: JSON.stringify({ networkId: selected.networkId, deviceKey: selected.deviceKey, scanId: selected.scanId, authorized: true }) });
       if (!destroyed && generation === taskGeneration) update(response);
     } catch (failure) {
       if (!destroyed && generation === taskGeneration) {
@@ -117,18 +122,38 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
   }
   async function cancel() {
     const current = context();
-    if (destroyed || starting || cancelling || !target || !current.matches || state.status !== 'checking') return;
-    const view = viewGeneration, generation = taskGeneration; cancelling = true; error = ''; sync();
+    if (destroyed || starting || cancelling || !target || !current.matches || state.status !== 'checking' || !validRunId(state.runId)) return;
+    const view = viewGeneration, generation = ++taskGeneration, runId = state.runId; cancelling = true; clearTimeout(timer); error = ''; sync();
     try {
-      await api('/api/device-check/cancel', { method: 'POST', body: '{}' });
-      if (!destroyed && generation === taskGeneration) update(await api('/api/device-check'));
+      await api('/api/device-check/cancel', { method: 'POST', body: JSON.stringify({ runId }) });
+      if (!destroyed && generation === taskGeneration) {
+        const refreshed = await api('/api/device-check');
+        if (!destroyed && generation === taskGeneration) update(refreshed);
+      }
     } catch (failure) { if (!destroyed && generation === taskGeneration && view === viewGeneration) error = '未能停止：' + failure.message; }
     finally { if (!destroyed && generation === taskGeneration) { cancelling = false; sync(); schedule(); } }
+  }
+  function exportReport() {
+    const current = context();
+    if (destroyed || starting || cancelling || current.viewReason || !target || target.identity !== current.identity || !current.matches) return;
+    let url;
+    try {
+      const exportedAt = new Date();
+      const report = buildDeviceCheckReport({ result: current.result, device: current.device, check: state, exportedAt: exportedAt.toISOString() });
+      url = URL.createObjectURL(new Blob([report], { type: 'text/plain;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = 'NetSpace-service-check-' + exportedAt.toISOString().replace(/[:.]/g, '-') + '.txt';
+      document.body.append(link);
+      try { link.click(); } finally { link.remove(); }
+      exportNotice = '已生成报告，请在浏览器下载列表中查看。';
+    } catch { exportNotice = '暂时无法生成报告，请确认当前设备已有检查结果后重试。'; }
+    finally { if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); }
+    sync();
   }
   ui['device-check-open'].addEventListener('click', () => {
     const current = context(); if (current.viewReason || starting || destroyed) return;
     viewGeneration++; error = ''; ui['device-check-consent'].checked = false;
-    target = { identity: current.identity, networkId: current.result.networkId, deviceKey: current.device.deviceKey };
+    target = { identity: current.identity, networkId: current.result.networkId, deviceKey: current.device.deviceKey, scanId: current.result.scanId };
     ui['device-check-target-name'].textContent = current.device.profile?.alias || current.device.hostname || '网络设备';
     ui['device-check-target-ip'].textContent = current.device.ip;
     dialog.showModal(); sync();
@@ -136,6 +161,7 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
   ui['device-check-consent'].addEventListener('change', sync);
   ui['device-check-start'].addEventListener('click', start);
   ui['device-check-cancel'].addEventListener('click', cancel);
+  ui['device-check-export'].addEventListener('click', exportReport);
   ui['device-check-close'].addEventListener('click', close);
   ui['device-check-dismiss'].addEventListener('click', close);
   dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
