@@ -352,6 +352,40 @@ class NetworkStore:
                      'gateway': row['gateway'], 'lastSeen': row['last_seen'],
                      'deviceCount': row['device_count']} for row in rows]
 
+    def list_network_cleanup_counts(self):
+        """Return identifying network labels and per-network row counts only."""
+        with self._lock:
+            rows = self._connection.execute(
+                'SELECT n.id, n.label, n.cidr, n.last_seen, '
+                '(SELECT COUNT(*) FROM devices d WHERE d.network_id = n.id) AS device_count, '
+                '(SELECT COUNT(*) FROM scans s WHERE s.network_id = n.id) AS scan_count, '
+                '(SELECT COUNT(*) FROM events e WHERE e.network_id = n.id) AS event_count '
+                'FROM networks n ORDER BY n.last_seen DESC, n.id').fetchall()
+            return [{'id': row['id'], 'label': row['label'], 'cidr': row['cidr'],
+                     'lastSeen': row['last_seen'], 'deviceCount': row['device_count'],
+                     'scanCount': row['scan_count'], 'eventCount': row['event_count']}
+                    for row in rows]
+
+    def delete_network(self, network_id):
+        """Delete one network and all identifying child records atomically."""
+        if not isinstance(network_id, str) or re.fullmatch(r'[0-9a-f]{32}', network_id) is None:
+            raise ValueError('请选择有效的本地网络。')
+        with self._transaction() as connection:
+            if connection.execute('SELECT 1 FROM networks WHERE id = ?', (network_id,)).fetchone() is None:
+                raise KeyError('本地网络不存在或已清理。')
+            counts = {
+                'deviceCount': connection.execute(
+                    'SELECT COUNT(*) FROM devices WHERE network_id = ?', (network_id,)).fetchone()[0],
+                'scanCount': connection.execute(
+                    'SELECT COUNT(*) FROM scans WHERE network_id = ?', (network_id,)).fetchone()[0],
+                'eventCount': connection.execute(
+                    'SELECT COUNT(*) FROM events WHERE network_id = ?', (network_id,)).fetchone()[0],
+            }
+            for table in ('events', 'scans', 'devices'):
+                connection.execute('DELETE FROM {} WHERE network_id = ?'.format(table), (network_id,))
+            connection.execute('DELETE FROM networks WHERE id = ?', (network_id,))
+            return counts
+
     def list_scans(self, network_id=None, limit=50):
         _validate_limit(limit)
         with self._lock:

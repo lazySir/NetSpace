@@ -2,6 +2,7 @@ import { createWorkspace } from '/workspace.js';
 import { buildDeviceCsv } from '/csv.js';
 import { createDeviceCheck } from '/device-check.js';
 import { createWebHeaderCheck } from '/web-header-check.js';
+import { createDataCleanup } from '/data-cleanup.js';
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
 const kindNames = { self: '本机', gateway: '默认网关', device: '网络设备' };
@@ -10,7 +11,7 @@ const evidenceNames = { self: '本机适配器', 'local-interface': '本机适�
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 let interfaces = [];
 let interfaceId = '';
-let realState = { status: 'idle', progress: null, result: null, error: null };
+let realState = { status: 'idle', progress: null, result: null, error: null, dataRevision: null };
 const realResults = new Map();
 let demo = false;
 let booting = true;
@@ -35,6 +36,7 @@ let joinedScan = false;
 let workspace = null;
 let deviceCheck = null;
 let webHeaderCheck = null;
+let dataCleanup = null;
 let backupInProgress = false;
 
 function makeDemoResult() {
@@ -111,6 +113,12 @@ function saveResult(result) {
 }
 function applyState(state) {
   if (!state || !['idle', 'scanning', 'complete', 'error'].includes(state.status)) throw new Error('本机服务返回的状态无法识别。');
+  const nextRevision = Number.isSafeInteger(state.dataRevision) && state.dataRevision >= 0 ? state.dataRevision : 0;
+  const currentRevision = realState.dataRevision;
+  if (Number.isInteger(currentRevision) && nextRevision < currentRevision) return false;
+  state = { ...state, dataRevision: nextRevision };
+  const dataChanged = Number.isInteger(currentRevision) && nextRevision > currentRevision;
+  if (dataChanged) { realResults.clear(); selectedId = null; lastRealSelection = null; }
   const incoming = state.result;
   const previous = incoming?.networkId ? [...realResults.values()].find(result => result.networkId === incoming.networkId) : null;
   if (incoming && previous && Array.isArray(incoming.devices)) {
@@ -121,6 +129,7 @@ function applyState(state) {
   deviceCheck?.observe(state.deviceCheck);
   webHeaderCheck?.observe(state.webHeaderCheck);
   workspace?.observeState(state);
+  dataCleanup?.observe(state);
   if (joinedScan && state.status !== 'scanning') {
     const completedInterfaceId = String(state.result?.interface?.id ?? '');
     if (state.status === 'complete' && interfaces.some((adapter) => String(adapter.id) === completedInterfaceId)) {
@@ -130,6 +139,7 @@ function applyState(state) {
   }
   render();
   if (state.status === 'scanning') schedulePoll(900); else clearTimeout(pollTimer);
+  return true;
 }
 async function api(path, options = {}) {
   const controller = new AbortController();
@@ -316,6 +326,7 @@ function render() {
   workspace?.render(result, devices.find((device) => device.id === selectedId));
   deviceCheck?.sync();
   webHeaderCheck?.sync();
+  dataCleanup?.observe(realState);
   if (deviceCheck?.busy || webHeaderCheck?.busy) ui['monitor-toggle'].disabled = true;
 }
 
@@ -417,6 +428,26 @@ workspace = createWorkspace({
   leaveReplay: () => { selectedId = null; resetDeviceFilters(); render(); },
   patchProfile: (networkId, deviceKey, profile) => { for (const result of realResults.values()) if (result.networkId === networkId) for (const device of result.devices) if (device.deviceKey === deviceKey) device.profile = { ...profile }; },
 });
+dataCleanup = createDataCleanup({
+  ui, api, showToast, isStopped: () => stopped, isBooting: () => booting,
+  onDeleted: async (networkId, revision) => {
+    if (!Number.isInteger(realState.dataRevision) || revision > realState.dataRevision) {
+      realResults.clear(); selectedId = null; lastRealSelection = null;
+      const next = { ...realState, dataRevision: revision };
+      if (next.result?.networkId === networkId) {
+        next.status = 'idle'; next.result = null; next.error = null; next.scanInterfaceId = null;
+        next.progress = { phase: 'idle', completed: 0, total: 0, message: '准备发现设备' };
+      }
+      for (const key of ['deviceCheck', 'webHeaderCheck']) {
+        if (next[key]?.networkId === networkId)
+          next[key] = { status: 'idle', completed: 0, total: key === 'deviceCheck' ? 7 : 0,
+            results: [], networkId: null, deviceKey: null, scanId: null, runId: null };
+      }
+      realState = next; workspace?.observeState(realState); dataCleanup?.observe(realState); render();
+    }
+    try { applyState(await api('/api/state')); } catch { /* The revision already invalidated local caches. */ }
+  },
+});
 deviceCheck = createDeviceCheck({
   ui, api, rerender: render,
   readContext: () => {
@@ -433,7 +464,7 @@ webHeaderCheck = createWebHeaderCheck({
       current: Boolean(result?.networkId && realState.result?.networkId === result.networkId && realState.result?.scanId === result.scanId && realState.result?.scannedAt === result.scannedAt) };
   },
 });
-window.addEventListener('pagehide', () => { clearTimeout(pollTimer); deviceCheck?.destroy(); webHeaderCheck?.destroy(); workspace?.destroy(); scene?.destroy(); });
+window.addEventListener('pagehide', () => { clearTimeout(pollTimer); deviceCheck?.destroy(); webHeaderCheck?.destroy(); dataCleanup?.destroy(); workspace?.destroy(); scene?.destroy(); });
 updateRotate();
 initializeScene();
 initialize().then(() => workspace.initialize());

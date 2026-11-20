@@ -81,14 +81,15 @@ async function conflictWhileDemo(context) {
   await withPage(context, async (page) => {
     let reads = 0;
     let scanCalls = 0;
+    let scanRequested = false;
     let completeB = false;
     await page.route('**/api/interfaces', (route) => route.fulfill({ json: { interfaces: [adapterA, adapterB], error: null } }));
     await page.route('**/api/state', (route) => {
       reads++;
-      const current = reads === 1 ? state('complete', result(adapterA)) : completeB ? state('complete', result(adapterB)) : state('scanning', result(adapterA));
+      const current = !scanRequested ? state('complete', result(adapterA)) : completeB ? state('complete', result(adapterB)) : state('scanning', result(adapterA));
       return route.fulfill({ json: current });
     });
-    await page.route('**/api/scan', (route) => { scanCalls++; return route.fulfill({ status: 409, json: { error: 'Adapter B discovery is already running' } }); });
+    await page.route('**/api/scan', (route) => { scanCalls++; scanRequested = true; return route.fulfill({ status: 409, json: { error: 'Adapter B discovery is already running' } }); });
     await page.goto(base, { waitUntil: 'networkidle' });
     await visibleAdapter(page, adapterA);
     await page.locator('#scan-button').click();
@@ -112,14 +113,17 @@ async function conflictWhileDemo(context) {
 async function conflictAlreadyComplete(context) {
   await withPage(context, async (page) => {
     let reads = 0;
+    let scanRequested = false;
     await page.route('**/api/interfaces', (route) => route.fulfill({ json: { interfaces: [adapterA, adapterB], error: null } }));
-    await page.route('**/api/state', (route) => { reads++; return route.fulfill({ json: state('complete', result(reads === 1 ? adapterA : adapterB)) }); });
-    await page.route('**/api/scan', (route) => route.fulfill({ status: 409, json: { error: 'Another discovery has just finished' } }));
+    await page.route('**/api/state', (route) => { reads++; return route.fulfill({ json: state('complete', result(scanRequested ? adapterB : adapterA)) }); });
+    await page.route('**/api/scan', (route) => { scanRequested = true; return route.fulfill({ status: 409, json: { error: 'Another discovery has just finished' } }); });
     await page.goto(base, { waitUntil: 'networkidle' });
     await visibleAdapter(page, adapterA);
     await page.locator('#scan-button').click();
     await visibleAdapter(page, adapterB);
-    assert.equal(reads, 2, 'completed 409 recovery needs no polling');
+    const readsAfterCompletion = reads;
+    await page.waitForTimeout(1050);
+    assert.equal(reads, readsAfterCompletion, 'completed 409 recovery needs no polling');
   });
 }
 

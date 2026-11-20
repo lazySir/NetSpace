@@ -587,6 +587,63 @@ class NetworkStoreTests(unittest.TestCase):
         self.assertEqual(len(self.store.list_events(other['networkId'], limit=3000)), 1)
         self.assertEqual(len(self.store.get_devices(first['networkId'])), 2106)
 
+    def test_cleanup_catalogue_counts_and_delete_is_scoped_to_one_network(self):
+        first = self.store.record_scan(scan(peer()))
+        network_id = first['networkId']
+        self.store.update_profile(network_id, first['devices'][1]['deviceKey'],
+                                  {'alias': '只应随该网络删除'})
+        self.store.record_scan(scan(peer(), peer('192.168.50.41', '02:DD:00:00:00:01'),
+                                    at='2026-11-20T01:00:00+00:00'))
+        other_network = scan(peer('192.168.60.30', '02:CC:00:00:60:01'))
+        other_network['interface'].update(ip='192.168.60.20', cidr='192.168.60.0/24',
+                                           gateway='192.168.60.1')
+        other_network['devices'][0].update(id='192.168.60.1', ip='192.168.60.1',
+                                            mac='02:AA:00:00:60:01')
+        other_network['links'] = [{'source': '192.168.60.1', 'target': '192.168.60.30',
+                                   'kind': 'same-subnet', 'inferred': True}]
+        other = self.store.record_scan(other_network)
+        self.store.set_settings({'notificationsEnabled': False})
+
+        catalogue = {item['id']: item for item in self.store.list_network_cleanup_counts()}
+        self.assertEqual(catalogue[network_id]['deviceCount'], 3)
+        self.assertEqual(catalogue[network_id]['scanCount'], 2)
+        self.assertEqual(catalogue[network_id]['eventCount'], 1)
+        self.assertEqual(catalogue[other['networkId']]['deviceCount'], 2)
+        self.assertEqual(catalogue[other['networkId']]['scanCount'], 1)
+        self.assertEqual(catalogue[other['networkId']]['eventCount'], 0)
+
+        deleted = self.store.delete_network(network_id)
+        self.assertEqual(deleted, {'deviceCount': 3, 'scanCount': 2, 'eventCount': 1})
+        self.assertEqual(self.store.list_network_cleanup_counts(), [catalogue[other['networkId']]])
+        self.assertEqual(self.store.get_settings(), {'notificationsEnabled': False})
+        self.assertEqual(len(self.store.get_devices(other['networkId'])), 2)
+        self.assertEqual(len(self.store.list_scans(other['networkId'])), 1)
+        self.assertEqual(self.store.list_events(other['networkId']), [])
+
+    def test_cleanup_rejects_malformed_or_unknown_network_ids(self):
+        for network_id in (None, True, '', 'A' * 32, '../' + 'a' * 30, 'a' * 31):
+            with self.subTest(network_id=network_id):
+                with self.assertRaises(ValueError):
+                    self.store.delete_network(network_id)
+        with self.assertRaises(KeyError):
+            self.store.delete_network('f' * 32)
+
+    def test_cleanup_rolls_back_all_rows_when_device_delete_fails(self):
+        saved = self.store.record_scan(scan(peer()))
+        network_id = saved['networkId']
+        self.store.record_scan(scan(peer(), peer('192.168.50.41', '02:DD:00:00:00:01'),
+                                    at='2026-11-20T01:00:00+00:00'))
+        with self.store._lock:
+            self.store._connection.execute(
+                "CREATE TRIGGER block_cleanup_device_delete BEFORE DELETE ON devices "
+                "BEGIN SELECT RAISE(ABORT, 'forced cleanup rollback'); END")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'forced cleanup rollback'):
+            self.store.delete_network(network_id)
+        self.assertEqual(len(self.store.list_network_cleanup_counts()), 1)
+        self.assertEqual(len(self.store.list_scans(network_id)), 2)
+        self.assertEqual(len(self.store.get_devices(network_id)), 3)
+        self.assertEqual(len(self.store.list_events(network_id)), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

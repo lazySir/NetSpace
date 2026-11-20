@@ -31,7 +31,7 @@ from device_check import SERVICES, probe_tcp_port
 from web_header_check import CHECKS_BY_SCHEME, check_http_headers
 
 
-VERSION = '1.15.0'
+VERSION = '1.16.0'
 DEVICE_CHECK_FRESH_SECONDS = 300
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
@@ -85,6 +85,8 @@ class ScanState:
         self.web_header_checker = web_header_checker
         self.persistence_lock = threading.RLock()
         self.monitor_settings_lock = threading.RLock()
+        self.maintenance = False
+        self.data_revision = 0
         self.closed = False
         self.monitor = MonitorController(self.start_scan, self.is_scanning, self.stopping.is_set)
 
@@ -100,7 +102,9 @@ class ScanState:
                                       'result': self.result, 'error': self.error,
                                       'scanInterfaceId': self.scan_interface_id,
                                       'deviceCheck': self.device_check,
-                                      'webHeaderCheck': self.web_header_check})
+                                      'webHeaderCheck': self.web_header_check,
+                                      'maintenance': self.maintenance,
+                                      'dataRevision': self.data_revision})
         snapshot['monitor'] = self.monitor_snapshot()
         return snapshot
 
@@ -118,7 +122,7 @@ class ScanState:
 
     def is_scanning(self):
         with self.lock:
-            return (self.status == 'scanning' or self._task_active(self.device_check) or
+            return (self.maintenance or self.status == 'scanning' or self._task_active(self.device_check) or
                     self._task_active(self.web_header_check))
 
     def cancel_device_check(self, run_id):
@@ -216,11 +220,13 @@ class ScanState:
             raise ValueError('请先确认你已获得此设备所有者授权。')
         if type(scan_id) is not int or scan_id <= 0:
             raise ValueError('发现记录标识无效，请刷新页面后重试。')
-        with self.persistence_lock:
+        if not self.persistence_lock.acquire(blocking=False):
+            return False
+        try:
             with self.lock:
                 if self.stopping.is_set() or self.closed:
                     raise ValueError('应用正在退出。')
-                if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
+                if self.maintenance or self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
                     return False
                 target, source_ip, scan_id = self._resolve_check_target(network_id, device_key, scan_id)
                 self.web_header_check = {'status': 'idle', 'completed': 0, 'total': 0, 'results': [],
@@ -240,6 +246,8 @@ class ScanState:
                     self.device_check = {**self.device_check, 'status': 'error'}
                     self.device_check_cancel = None
                     raise
+        finally:
+            self.persistence_lock.release()
         return True
 
     def start_web_header_check(self, network_id, device_key, scan_id, authorized):
@@ -247,11 +255,13 @@ class ScanState:
             raise ValueError('请先确认你已获得此设备所有者授权。')
         if type(scan_id) is not int or scan_id <= 0:
             raise ValueError('发现记录标识无效，请刷新页面后重试。')
-        with self.persistence_lock:
+        if not self.persistence_lock.acquire(blocking=False):
+            return False
+        try:
             with self.lock:
                 if self.stopping.is_set() or self.closed:
                     raise ValueError('应用正在退出。')
-                if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
+                if self.maintenance or self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
                     return False
                 target, source_ip, scan_id = self._resolve_check_target(network_id, device_key, scan_id)
                 service = self.device_check
@@ -278,6 +288,8 @@ class ScanState:
                     self.web_header_check = {**self.web_header_check, 'status': 'error'}
                     self.web_header_check_cancel = None
                     raise
+        finally:
+            self.persistence_lock.release()
         return True
 
     @staticmethod
@@ -405,6 +417,50 @@ class ScanState:
                             device['profile'] = copy.deepcopy(profile)
             return profile
 
+    def cleanup_network_data(self, network_id):
+        """Remove one network after excluding scans, checks, and scheduled discovery."""
+        with self.monitor_settings_lock:
+            # Monitor configuration cannot change while this guard is held. A
+            # running scheduled task is also visible through the scan/check state.
+            if self.monitor.snapshot()['enabled']:
+                return None
+            with self.persistence_lock:
+                with self.lock:
+                    if self.stopping.is_set() or self.closed:
+                        raise ValueError('应用正在退出。')
+                    if (self.maintenance or self.status == 'scanning' or
+                            self._task_active(self.device_check) or
+                            self._task_active(self.web_header_check)):
+                        return None
+                    self.maintenance = True
+                try:
+                    counts = self.store.delete_network(network_id)
+                    with self.lock:
+                        if self.result and self.result.get('networkId') == network_id:
+                            self.result = None
+                            self.status = 'idle'
+                            self.error = None
+                            self.scan_interface_id = None
+                            self.progress = {'phase': 'idle', 'completed': 0, 'total': 0,
+                                             'message': '准备发现设备'}
+                        for key, cancel_field in (('device_check', 'device_check_cancel'),
+                                                  ('web_header_check', 'web_header_check_cancel')):
+                            current = getattr(self, key)
+                            if current.get('networkId') == network_id:
+                                cancel = getattr(self, cancel_field)
+                                if cancel is not None:
+                                    cancel.set()
+                                setattr(self, key, {'status': 'idle', 'completed': 0, 'total': 0,
+                                                    'results': [], 'networkId': None, 'deviceKey': None,
+                                                    'scanId': None, 'runId': None})
+                                setattr(self, cancel_field, None)
+                        self.data_revision += 1
+                        revision = self.data_revision
+                    return {'counts': counts, 'dataRevision': revision}
+                finally:
+                    with self.lock:
+                        self.maintenance = False
+
     def close(self):
         self.stopping.set()
         with self.lock:
@@ -427,7 +483,7 @@ class ScanState:
         with self.lock:
             if self.stopping.is_set():
                 raise ValueError('应用正在退出')
-            if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
+            if self.maintenance or self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
                 return False
             if self.interfaces is None:
                 self.get_interfaces()
@@ -612,6 +668,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._respond(503, {'interfaces': [], 'error': str(error)})
         elif path == '/api/state':
             self._respond(200, self.server.state.snapshot())
+        elif path == '/api/data-cleanup':
+            if urlsplit(self.path).query:
+                self._respond(400, {'error': '清理目录不接受查询参数'})
+            else:
+                try:
+                    self._respond(200, {'networks': self.server.state.store.list_network_cleanup_counts()})
+                except Exception:
+                    LOGGER.exception('Cannot read local cleanup catalogue')
+                    self._respond(503, {'error': '读取本地网络清理目录失败，请稍后重试'})
         elif path in ('/api/networks', '/api/history', '/api/devices', '/api/events', '/api/monitor') or path.startswith('/api/history/'):
             self._get_workspace(path)
         elif path.startswith('/api/'):
@@ -683,7 +748,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path not in ('/api/scan', '/api/shutdown', '/api/profile', '/api/events/read',
                         '/api/monitor', '/api/device-check', '/api/device-check/cancel',
-                        '/api/web-header-check', '/api/web-header-check/cancel'):
+                        '/api/web-header-check', '/api/web-header-check/cancel',
+                        '/api/data-cleanup'):
             self._respond(404, {'error': '接口不存在'})
             return
         try:
@@ -718,6 +784,21 @@ class RequestHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         try:
+            if path == '/api/data-cleanup':
+                expected_origin = 'http://' + self.headers.get('Host', '').lower()
+                if self.headers.get('Origin') != expected_origin:
+                    self._respond(403, {'error': '请从当前 NetSpace 页面启动本地数据清理'})
+                    return
+                if urlsplit(self.path).query:
+                    raise ValueError('清理请求不接受查询参数。')
+                if set(data) != {'networkId', 'confirmed'} or data.get('confirmed') is not True:
+                    raise ValueError('请重新选择网络并勾选永久删除确认。')
+                outcome = self.server.state.cleanup_network_data(data['networkId'])
+                if outcome is None:
+                    self._respond(409, {'error': '当前发现、检查或定时任务结束后才能清理本地记录。'})
+                else:
+                    self._respond(200, {'deleted': True, **outcome})
+                return
             if path in ('/api/device-check', '/api/device-check/cancel',
                         '/api/web-header-check', '/api/web-header-check/cancel'):
                 expected_origin = 'http://' + self.headers.get('Host', '').lower()

@@ -9,6 +9,7 @@ export function createWorkspace(options) {
   const { ui, api, rerender, showToast } = options;
   let monitor = { enabled: false, interfaceId: null, intervalSeconds: 300, nextScanAt: null, error: null, notificationsEnabled: true };
   let ready = false, busy = false, destroyed = false, refreshing = false, timer = null, settingsGeneration = 0;
+  let dataRevision = null, dataGeneration = 0;
   let replay = null, replayRequest = 0, networkId = '', pinnedNetwork = false, tab = 'devices';
   let comparisonSourceId = '', comparisonTargetId = '', comparisonResult = null, comparisonError = '', comparisonLoading = false, comparisonRequest = 0;
   let wasDemo = false;
@@ -24,6 +25,17 @@ export function createWorkspace(options) {
   function resetComparison(clearSelection = true) {
     comparisonRequest++; comparisonResult = null; comparisonError = ''; comparisonLoading = false;
     if (clearSelection) { comparisonSourceId = ''; comparisonTargetId = ''; }
+  }
+  function invalidateData(revision) {
+    if (!Number.isSafeInteger(revision) || revision < 0 || dataRevision === revision) return;
+    dataRevision = revision; dataGeneration++; replayRequest++; replay = null; loadingReplay = false;
+    resetComparison(); resetEventFilters();
+    networkId = ''; pinnedNetwork = false; networks = []; scans = []; events = []; records = []; unreadCount = 0;
+    archiveError = ''; networkSignature = ''; historySignature = ''; eventSignature = ''; liveSignature = '';
+    drafts.clear(); notifiedEvents.clear(); eventSearchIndex = null; eventSearchSignature = ''; visibleEvents = [];
+    ui['history-scan'].replaceChildren(); ui['history-comparison-list'].replaceChildren();
+    ui['history-comparison-status'].textContent = '选择两次同一网络的发现记录，查看设备变化。';
+    rerender();
   }
 
   function readonly() { return options.isDemo() || Boolean(replay) || options.isStopped(); }
@@ -175,12 +187,12 @@ export function createWorkspace(options) {
     if (options.isDemo() || options.isStopped() || !networkId) return;
     const sourceId = comparisonSourceId, targetId = comparisonTargetId, expectedNetwork = networkId;
     if (!sourceId || !targetId || sourceId === targetId) return;
-    const request = ++comparisonRequest; comparisonLoading = true; comparisonError = ''; comparisonResult = null; rerender();
+    const request = ++comparisonRequest, requestedDataGeneration = dataGeneration; comparisonLoading = true; comparisonError = ''; comparisonResult = null; rerender();
     try {
       const [sourceData, targetData] = await Promise.all([
         api('/api/history/' + encodeURIComponent(sourceId)), api('/api/history/' + encodeURIComponent(targetId)),
       ]);
-      if (request !== comparisonRequest || destroyed || options.isDemo() || networkId !== expectedNetwork
+      if (request !== comparisonRequest || requestedDataGeneration !== dataGeneration || destroyed || options.isDemo() || networkId !== expectedNetwork
         || comparisonSourceId !== sourceId || comparisonTargetId !== targetId) return;
       for (const [id, data] of [[sourceId, sourceData], [targetId, targetData]]) {
         if (!data.result || !Array.isArray(data.result.devices) || data.result.networkId !== expectedNetwork || String(data.result.scanId) !== id) {
@@ -198,7 +210,7 @@ export function createWorkspace(options) {
       }
       for (const [identity, device] of before) if (!after.has(identity)) missing.push(device);
       comparisonResult = { source: sourceData.result, target: targetData.result, added, missing, changed, unchanged };
-    } catch (error) { if (request === comparisonRequest) comparisonError = '无法比较：' + error.message; }
+    } catch (error) { if (request === comparisonRequest && requestedDataGeneration === dataGeneration) comparisonError = '无法比较：' + error.message; }
     finally { if (request === comparisonRequest && !destroyed) { comparisonLoading = false; rerender(); } }
   }
   function renderEvents() {
@@ -306,11 +318,12 @@ export function createWorkspace(options) {
   }
   async function loadNetworkRecords() {
     const expected = networkId;
+    const requestedDataGeneration = dataGeneration;
     const requestedSettingsGeneration = settingsGeneration;
     if (!expected) { scans = []; events = []; records = []; unreadCount = 0; rerender(); return; }
     const query = '?networkId=' + encodeURIComponent(expected);
     const responses = await Promise.allSettled([api('/api/history' + query + '&limit=50'), api('/api/events' + query + '&limit=50'), api('/api/devices' + query)]);
-    if (destroyed || networkId !== expected) return;
+    if (destroyed || requestedDataGeneration !== dataGeneration || networkId !== expected) return;
     const [history, changes, devices] = responses;
     const errors = responses.filter(item => item.status === 'rejected');
     archiveError = errors.length ? '本地记录暂时无法读取：' + errors[0].reason.message : '';
@@ -325,13 +338,20 @@ export function createWorkspace(options) {
   async function refresh(readLive = false) {
     if (destroyed || options.isStopped() || refreshing) return;
     refreshing = true;
+    const requestedDataGeneration = dataGeneration;
+    let nextRefreshDelay = 3000;
     const requestedSettingsGeneration = settingsGeneration;
     try {
-      const [settings, catalogue] = await Promise.allSettled([api('/api/monitor'), api('/api/networks')]);
+      const [settings, catalogue, liveState] = await Promise.allSettled([
+        api('/api/monitor'), api('/api/networks'), api('/api/state'),
+      ]);
       if (destroyed) return;
       if (settings.status === 'fulfilled' && settingsGeneration === requestedSettingsGeneration) { monitor = { ...monitor, ...settings.value }; ready = true; monitorError = ''; }
       else if (settings.status === 'fulfilled') ready = true;
       else monitorError = settings.reason.message;
+      if (liveState.status === 'fulfilled') options.applyState(liveState.value);
+      else monitorError = '本机数据版本暂时无法读取：' + liveState.reason.message;
+      if (requestedDataGeneration !== dataGeneration) { nextRefreshDelay = 0; return; }
       if (catalogue.status === 'fulfilled') networks = Array.isArray(catalogue.value.networks) ? catalogue.value.networks : [];
       else archiveError = catalogue.reason.message;
       const liveId = options.getLiveResult()?.networkId;
@@ -341,11 +361,8 @@ export function createWorkspace(options) {
         networkId = nextNetworkId; resetComparison(); resetEventFilters(); scans = []; events = []; records = []; unreadCount = 0; archiveError = '';
       }
       rerender();
-      if (ready && (readLive || monitor.enabled) && options.readState().status !== 'scanning') {
-        try { options.applyState(await api('/api/state')); } catch (error) { monitorError = '定时发现状态暂时无法读取：' + error.message; }
-      }
       await loadNetworkRecords();
-    } finally { refreshing = false; if (!destroyed && !options.isStopped()) { clearTimeout(timer); timer = setTimeout(() => refresh(true), 3000); } }
+    } finally { refreshing = false; if (!destroyed && !options.isStopped()) { clearTimeout(timer); timer = setTimeout(() => refresh(true), nextRefreshDelay); } }
   }
   async function updateMonitor(changes) {
     if (readonly() || !ready || busy) return;
@@ -390,13 +407,13 @@ export function createWorkspace(options) {
   ui['history-scan'].addEventListener('change', async () => {
     const id = ui['history-scan'].value;
     if (!id || options.isDemo() || options.isStopped()) return;
-    const request = ++replayRequest, expectedNetwork = networkId; loadingReplay = true; archiveError = ''; rerender();
+    const request = ++replayRequest, expectedNetwork = networkId, requestedDataGeneration = dataGeneration; loadingReplay = true; archiveError = ''; rerender();
     try {
       const data = await api('/api/history/' + encodeURIComponent(id));
-      if (request !== replayRequest || destroyed) return;
+      if (request !== replayRequest || requestedDataGeneration !== dataGeneration || destroyed) return;
       if (!data.result || !Array.isArray(data.result.devices) || data.result.networkId !== expectedNetwork) throw new Error('历史快照不属于所选网络，请重新选择。');
       replay = data.result; options.enterReplay();
-    } catch (error) { if (request === replayRequest) archiveError = '无法回看：' + error.message; }
+    } catch (error) { if (request === replayRequest && requestedDataGeneration === dataGeneration) archiveError = '无法回看：' + error.message; }
     finally { if (request === replayRequest) { loadingReplay = false; rerender(); } }
   });
   function leaveReplay(renderNow = true) { replayRequest++; replay = null; loadingReplay = false; if (renderNow) { options.leaveReplay(); maybeNotify(); } }
@@ -411,15 +428,16 @@ export function createWorkspace(options) {
   ui['profile-form'].addEventListener('submit', async event => {
     event.preventDefault(); const result = options.activeResult(), device = options.selectedDevice(), draft = drafts.get(profileKey);
     if (readonly() || !ready || !result?.networkId || !device?.deviceKey || !draft || draft.saving) return;
-    const key = profileKey, network = result.networkId, deviceKey = device.deviceKey, values = { ...draft.values };
+    const key = profileKey, network = result.networkId, deviceKey = device.deviceKey, values = { ...draft.values }, requestedDataGeneration = dataGeneration;
     draft.saving = true; draft.error = false; draft.message = ''; rerender();
     try {
       const response = await api('/api/profile', { method: 'POST', body: JSON.stringify({ networkId: network, deviceKey, ...values }) });
+      if (requestedDataGeneration !== dataGeneration) return;
       draft.values = { ...EMPTY_PROFILE, ...response.profile }; draft.dirty = false; draft.message = '已保存到本机';
       options.patchProfile(network, deviceKey, draft.values);
       for (const record of records) if (record.deviceKey === deviceKey && networkId === network) record.profile = draft.values;
       await loadNetworkRecords();
-    } catch (error) { draft.error = true; draft.message = '保存失败：' + error.message; }
+    } catch (error) { if (requestedDataGeneration === dataGeneration) { draft.error = true; draft.message = '保存失败：' + error.message; } }
     finally { draft.saving = false; if (drafts.has(key)) rerender(); }
   });
   ui['events-read'].addEventListener('click', async () => {
@@ -437,7 +455,10 @@ export function createWorkspace(options) {
     get replayResult() { return replay; }, render, initialize: refresh, leaveReplay,
     observeState(state) {
       if (state.monitor && !ready) { monitor = { ...monitor, ...state.monitor }; ready = true; }
-      const signature = JSON.stringify([state.result?.networkId, state.result?.scanId, state.result?.scannedAt]);
+      const revision = Number.isSafeInteger(state.dataRevision) && state.dataRevision >= 0 ? state.dataRevision : 0;
+      if (dataRevision === null) dataRevision = revision;
+      else if (revision !== dataRevision) invalidateData(revision);
+      const signature = JSON.stringify([revision, state.result?.networkId, state.result?.scanId, state.result?.scannedAt]);
       if (signature !== liveSignature) { liveSignature = signature; if (ready && !refreshing) { clearTimeout(timer); timer = setTimeout(refresh, 250); } }
     },
     destroy() { destroyed = true; clearTimeout(timer); replayRequest++; resetComparison(); },

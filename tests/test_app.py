@@ -262,7 +262,7 @@ class LocalServerTests(unittest.TestCase):
     def test_interfaces_and_initial_state(self):
         status, health = self.request('/api/health')
         self.assertEqual(status, 200)
-        self.assertEqual(health['version'], '1.15.0')
+        self.assertEqual(health['version'], '1.16.0')
         status, body = self.request('/api/interfaces')
         self.assertEqual(status, 200)
         self.assertEqual(body['interfaces'][0]['id'], '7')
@@ -270,6 +270,143 @@ class LocalServerTests(unittest.TestCase):
         self.assertEqual(state['status'], 'idle')
         self.assertIsNone(state['result'])
         self.assertIsNone(state['deviceCheck']['runId'])
+
+    def test_data_cleanup_api_requires_exact_same_origin_confirmation_and_invalidates_state(self):
+        saved = self.save_check_snapshot()
+        store = self.server.state.store
+        second = {**saved, 'scannedAt': '2026-11-20T15:00:00+00:00',
+                  'devices': saved['devices'] + [
+                      {'id': '192.168.50.46', 'ip': '192.168.50.46', 'kind': 'device',
+                       'hostname': 'SYNTHETIC-PEER'}]}
+        store.record_scan(second)
+        self.server.state.update_profile(saved['networkId'], saved['devices'][1]['deviceKey'],
+                                         {'alias': '虚构本地档案'})
+        store.set_settings({'notificationsEnabled': False})
+        self.server.state.result = saved
+        origin = {'Origin': self.base}
+
+        status, catalogue = self.request('/api/data-cleanup')
+        self.assertEqual(status, 200)
+        self.assertEqual(catalogue['networks'], [{
+            'id': saved['networkId'], 'label': 'Ethernet', 'cidr': '192.168.50.0/24',
+            'lastSeen': second['scannedAt'], 'deviceCount': 3, 'scanCount': 2, 'eventCount': 1,
+        }])
+        self.assertEqual(self.request('/api/data-cleanup', {'networkId': saved['networkId'],
+                                                            'confirmed': True}, method='POST')[0], 403)
+        self.assertEqual(self.request('/api/data-cleanup', {'networkId': saved['networkId'],
+                                                            'confirmed': True},
+                                      {'Origin': 'https://other.example'}, method='POST')[0], 403)
+        self.assertEqual(self.request('/api/data-cleanup?networkId=' + saved['networkId'],
+                                      headers=origin)[0], 400)
+        self.assertEqual(self.request('/api/data-cleanup?extra=1',
+                                      {'networkId': saved['networkId'], 'confirmed': True},
+                                      origin, method='POST')[0], 400)
+        for body in ({'networkId': saved['networkId'], 'confirmed': False},
+                     {'networkId': saved['networkId'], 'confirmed': 1},
+                     {'networkId': saved['networkId'], 'confirmed': True, 'deviceKey': 'ignored'},
+                     {'networkId': '../' + 'a' * 30, 'confirmed': True},
+                     {'networkId': 'f' * 32, 'confirmed': True}):
+            with self.subTest(body=body):
+                self.assertIn(self.request('/api/data-cleanup', body, origin, method='POST')[0],
+                              (400, 404))
+        self.assertEqual(len(store.list_scans(saved['networkId'])), 2)
+        self.assertEqual(self.request('/api/state')[1]['dataRevision'], 0)
+
+        status, deleted = self.request('/api/data-cleanup',
+                                        {'networkId': saved['networkId'], 'confirmed': True},
+                                        origin, method='POST')
+        self.assertEqual(status, 200)
+        self.assertEqual(deleted, {'deleted': True,
+                                   'counts': {'deviceCount': 3, 'scanCount': 2, 'eventCount': 1},
+                                   'dataRevision': 1})
+        state = self.request('/api/state')[1]
+        self.assertIsNone(state['result'])
+        self.assertEqual(state['dataRevision'], 1)
+        self.assertEqual(store.get_settings(), {'notificationsEnabled': False})
+        self.assertEqual(store.list_networks(), [])
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.check_calls, [])
+
+    def test_data_cleanup_conflicts_with_active_discovery_check_or_monitor(self):
+        saved = self.save_check_snapshot()
+        body = {'networkId': saved['networkId'], 'confirmed': True}
+        origin = {'Origin': self.base}
+        self.gate.clear()
+        self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 202)
+        self.assertEqual(self.request('/api/data-cleanup', body, origin, method='POST')[0], 409)
+        self.gate.set()
+        for _ in range(100):
+            if self.server.state.snapshot()['status'] != 'scanning':
+                break
+            time.sleep(.01)
+        self.assertEqual(self.server.state.snapshot()['status'], 'complete')
+
+        fresh = self.save_check_snapshot()
+        peer = next(item for item in fresh['devices'] if item['kind'] == 'device')
+        check = {'networkId': fresh['networkId'], 'deviceKey': peer['deviceKey'],
+                 'scanId': fresh['scanId'], 'authorized': True}
+        self.check_gate.clear()
+        started = self.request('/api/device-check', check, origin, method='POST')
+        self.assertEqual(started[0], 202)
+        self.assertEqual(self.request('/api/data-cleanup', body, origin, method='POST')[0], 409)
+        self.check_gate.set()
+        self.wait_for_check()
+
+        with mock.patch.object(self.server.state.monitor, 'snapshot',
+                               return_value={'enabled': True, 'interfaceId': '7',
+                                             'intervalSeconds': 60, 'nextScanAt': None, 'error': None}):
+            self.assertEqual(self.request('/api/data-cleanup', body, origin, method='POST')[0], 409)
+
+    def test_data_cleanup_does_not_clear_or_advance_revision_when_delete_rolls_back(self):
+        saved = self.save_check_snapshot()
+        with mock.patch.object(self.server.state.store, 'delete_network',
+                               side_effect=sqlite3.IntegrityError('forced cleanup rollback')):
+            with self.assertLogs('netspace', level='ERROR'):
+                self.assertEqual(self.request('/api/data-cleanup',
+                                              {'networkId': saved['networkId'], 'confirmed': True},
+                                              {'Origin': self.base}, method='POST')[0], 503)
+        state = self.request('/api/state')[1]
+        self.assertEqual(state['dataRevision'], 0)
+        self.assertEqual(state['result']['networkId'], saved['networkId'])
+        self.assertEqual(len(self.server.state.store.list_networks()), 1)
+
+    def test_cleanup_maintenance_blocks_new_discovery_and_device_checks(self):
+        saved = self.save_check_snapshot()
+        peer = next(item for item in saved['devices'] if item['kind'] == 'device')
+        delete_entered, release_delete = threading.Event(), threading.Event()
+        original_delete = self.server.state.store.delete_network
+
+        def held_delete(network_id):
+            delete_entered.set()
+            if not release_delete.wait(3):
+                raise RuntimeError('cleanup test timed out')
+            return original_delete(network_id)
+
+        response = []
+        with mock.patch.object(self.server.state.store, 'delete_network', side_effect=held_delete):
+            worker = threading.Thread(target=lambda: response.append(self.request(
+                '/api/data-cleanup', {'networkId': saved['networkId'], 'confirmed': True},
+                {'Origin': self.base}, method='POST')), daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(delete_entered.wait(2), 'cleanup should enter its protected transaction')
+                self.assertTrue(self.server.state.snapshot()['maintenance'])
+                self.assertEqual(self.request('/api/scan', {'interfaceId': '7'})[0], 409)
+                check = {'networkId': saved['networkId'], 'deviceKey': peer['deviceKey'],
+                         'scanId': saved['scanId'], 'authorized': True}
+                self.assertEqual(self.request('/api/device-check', check,
+                                              {'Origin': self.base}, method='POST')[0], 409)
+                self.assertEqual(self.request('/api/web-header-check', check,
+                                              {'Origin': self.base}, method='POST')[0], 409)
+                self.assertEqual(self.calls, [])
+                self.assertEqual(self.check_calls, [])
+            finally:
+                release_delete.set()
+                worker.join(3)
+        self.assertFalse(worker.is_alive(), 'cleanup request should finish after releasing the test gate')
+        self.assertEqual(response[0][0], 200)
+        self.assertFalse(self.server.state.snapshot()['maintenance'])
+        self.assertEqual(self.server.state.snapshot()['dataRevision'], 1)
 
     def test_backup_download_is_integral_validated_and_keeps_internal_paths_private(self):
         store = self.server.state.store

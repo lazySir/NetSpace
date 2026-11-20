@@ -117,7 +117,7 @@
         </aside>
       </section>
 
-      <footer class="workspace-footer"><div class="footer-status"><span class="status-dot" id="footer-dot"></span><span id="footer-status">正在连接本机服务</span><span class="footer-separator">/</span><span id="footer-range">发现范围：等待适配器</span></div><div class="footer-actions"><button id="export-button" class="text-button" disabled><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>导出 JSON</button><span class="footer-separator">/</span><button id="export-csv-button" class="text-button" disabled aria-label="导出当前可见设备为 CSV">导出 CSV</button><span class="footer-separator">/</span><button id="backup-button" class="text-button" disabled aria-describedby="backup-help">备份本地数据</button><span class="footer-separator">/</span><button id="shutdown-button" class="text-button subtle-button"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>停止服务</button></div><span id="backup-help" class="sr-only">下载设备档案、历史记录、事件和设置的 SQLite 备份。文件保存在浏览器默认下载位置。</span></footer>
+      <footer class="workspace-footer"><div class="footer-status"><span class="status-dot" id="footer-dot"></span><span id="footer-status">正在连接本机服务</span><span class="footer-separator">/</span><span id="footer-range">发现范围：等待适配器</span></div><div class="footer-actions"><button id="export-button" class="text-button" disabled><svg class="icon" aria-hidden="true"><use href="#i-export"/></svg>导出 JSON</button><span class="footer-separator">/</span><button id="export-csv-button" class="text-button" disabled aria-label="导出当前可见设备为 CSV">导出 CSV</button><span class="footer-separator">/</span><button id="backup-button" class="text-button" disabled aria-describedby="backup-help">备份本地数据</button><span class="footer-separator">/</span><button id="data-cleanup-open" class="text-button cleanup-open-button" type="button">清理本地网络数据</button><span class="footer-separator">/</span><button id="shutdown-button" class="text-button subtle-button"><svg class="icon" aria-hidden="true"><use href="#i-power"/></svg>停止服务</button></div><span id="backup-help" class="sr-only">下载设备档案、历史记录、事件和设置的 SQLite 备份。文件保存在浏览器默认下载位置。</span></footer>
       <p class="privacy-note">本机发现 · 本地呈现 <span>—</span> 设备结果来自当前扫描及系统邻居记录，缓存记录不等于当前在线。</p>
     </main>
   </div>
@@ -146,6 +146,17 @@
     <ul id="web-header-check-results" class="device-check-results web-header-check-results" aria-label="网页安全响应头检查结果"></ul>
     <p class="device-check-meaning"><strong>怎么看结果？</strong>这里只比较响应头名称，不展示或保存其内容。“缺少”表示可以和设备管理者讨论是否需要配置，不等于已发现漏洞；“存在”也不代表整个网站配置安全。HTTPS 若证书无法验证，会显示不可用。</p>
     <div class="device-check-actions"><button id="web-header-check-close" type="button" class="button button-secondary">关闭</button><button id="web-header-check-cancel" type="button" class="button button-secondary" disabled>停止本次检查</button><button id="web-header-check-start" type="button" class="button button-primary" disabled>发送请求并检查</button></div>
+  </dialog>
+  <dialog id="data-cleanup-dialog" class="device-check-dialog data-cleanup-dialog" aria-labelledby="data-cleanup-title" aria-describedby="data-cleanup-intro">
+    <button id="data-cleanup-dismiss" type="button" class="device-check-dismiss" aria-label="关闭本地数据清理窗口">关闭 <span aria-hidden="true">×</span></button>
+    <div class="device-check-dialog-heading"><span class="eyebrow">LOCAL DATA // 本机清理</span><h2 id="data-cleanup-title">清理本地网络数据</h2><p id="data-cleanup-intro">选择一个已保存的网络，可永久删除它的设备档案、发现历史快照和网络变化记录。其他网络与全局提醒设置会保留。</p></div>
+    <label class="data-cleanup-label" for="data-cleanup-network">选择要清理的网络</label>
+    <select id="data-cleanup-network" class="data-cleanup-select"><option value="">正在读取本机保存的网络…</option></select>
+    <p id="data-cleanup-summary" class="data-cleanup-summary" role="status" aria-live="polite">正在读取本机保存的网络和记录数量…</p>
+    <p class="data-cleanup-warning">此操作无法在 NetSpace 中撤销，所选记录会从当前数据库删除；SQLite 不保证覆盖磁盘上的旧数据页，因此这不是取证级擦除。已下载的报告、导出文件和数据库备份也不会被删除。</p>
+    <label class="device-check-consent data-cleanup-consent" for="data-cleanup-confirm"><input id="data-cleanup-confirm" type="checkbox"><span>我确认永久删除所选网络的全部本地记录。</span></label>
+    <p id="data-cleanup-message" class="device-check-error" role="status" aria-live="polite" hidden></p>
+    <div class="device-check-actions"><button id="data-cleanup-close" type="button" class="button button-secondary">取消</button><button id="data-cleanup-delete" type="button" class="button data-cleanup-danger" disabled>永久删除所选网络</button></div>
   </dialog>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>

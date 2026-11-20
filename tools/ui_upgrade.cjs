@@ -1,9 +1,12 @@
 // Isolated browser fixtures verify local history and device workflows without discovering the LAN.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 const { chromium } = require('../.tools/qa/node_modules/playwright');
-const base = process.env.NETSPACE_URL || 'http://127.0.0.1:8767';
+let base = process.env.NETSPACE_URL || '';
+let fixtureServer = null;
+const webRoot = path.resolve(__dirname, '../web');
 const output = path.resolve(__dirname, '../artifacts');
 const adapters = [
   { id: '9', alias: 'Ethernet', ip: '192.168.50.20', gateway: '192.168.50.1', cidr: '192.168.50.0/24', scanCidr: '192.168.50.0/24' },
@@ -40,6 +43,18 @@ function parseCsv(text) {
 }
 async function run() {
   fs.mkdirSync(output, { recursive: true });
+  if (!base) {
+    fixtureServer = http.createServer((request, response) => {
+      const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
+      if (pathname.startsWith('/api/')) { response.writeHead(500); response.end('API calls must use Playwright fixtures'); return; }
+      const file = path.resolve(webRoot, '.' + (pathname === '/' ? '/index.html' : pathname));
+      if (!file.startsWith(webRoot + path.sep) || !fs.existsSync(file)) { response.writeHead(404); response.end(); return; }
+      response.writeHead(200, { 'Content-Type': { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' }[path.extname(file)] || 'application/octet-stream' });
+      fs.createReadStream(file).pipe(response);
+    });
+    await new Promise(resolve => fixtureServer.listen(0, '127.0.0.1', resolve));
+    base = 'http://127.0.0.1:' + fixtureServer.address().port;
+  }
   assert.deepEqual(parseCsv('"edge""quote",,"multi\r\nline"\r\n'), [['edge"quote', '', 'multi\r\nline']], 'CSV parsing should retain escaped quotes, empty trailing fields and embedded CRLF');
   assert.deepEqual(parseCsv('""'), [['']], 'CSV parsing should retain a quoted single empty field');
   assert.throws(() => parseCsv('"closed"x'), /Invalid characters after CSV quote/);
@@ -82,7 +97,14 @@ async function run() {
     const comparisonSame = { ...comparisonAfter, scanId: 7, scannedAt: '2026-11-19T03:00:00Z' };
     const comparisonForeign = snapshot(adapters[1], 'network-B', 6);
     let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b], availableHistoryIds = null;
-    let releaseEvents = null, releaseMonitor = null, releaseOldState = null, releaseComparison = null, holdNextEvents = false, holdNextMonitor = false, holdNextState = false, delayComparison = false, crossNetworkComparison = false;
+    let pollScanFixture = false, scanAwaitingPoll = false;
+    let releaseEvents = null, releaseMonitor = null, releaseOldState = null, releaseComparison = null, releaseCleanupReplay = null, holdCleanupReplay = false, holdNextEvents = false, holdNextMonitor = false, holdNextState = false, delayComparison = false, crossNetworkComparison = false;
+    const cleanupIdA = 'a'.repeat(32), cleanupIdB = 'b'.repeat(32);
+    let dataRevision = 0;
+    let cleanupCatalogue = [
+      { id: cleanupIdA, label: 'Ethernet 测试网络', cidr: '192.168.50.0/24', lastSeen: a.scannedAt, deviceCount: 2, scanCount: 3, eventCount: 5 },
+      { id: cleanupIdB, label: 'Wi-Fi 测试网络', cidr: '192.168.60.0/24', lastSeen: b.scannedAt, deviceCount: 2, scanCount: 1, eventCount: 0 },
+    ];
     let monitor = { enabled: false, interfaceId: null, intervalSeconds: 300, nextScanAt: null, error: null, notificationsEnabled: true };
     const events = [
       { id: 11, networkId: 'network-A', scanId: 2, deviceKey: 'workstation', kind: 'new', ip: a.interface.ip, previousIp: null, name: '工作站', occurredAt: a.scannedAt, read: false, notify: true },
@@ -92,15 +114,18 @@ async function run() {
       { id: 8, networkId: 'network-A', scanId: 2, deviceKey: 'camera', kind: 'not_seen', ip: '192.168.50.32', previousIp: null, name: '摄像头', occurredAt: a.scannedAt, read: true, notify: false },
       { id: 1002, networkId: 'network-B', scanId: 3, deviceKey: 'foreign-device', kind: 'new', ip: '192.168.60.45', previousIp: null, name: '其他网络设备', occurredAt: b.scannedAt, read: false, notify: true },
     ];
-    await page.route('**/api/**', async route => {
+    await context.route('**/api/**', async route => {
       const req = route.request(), url = new URL(req.url()), body = req.method() === 'POST' ? req.postDataJSON() : null;
-      if (url.pathname === '/api/history/1' && delayHistory) await new Promise(resolve => setTimeout(resolve, 900));
+      if (url.pathname === '/api/history/1' && holdCleanupReplay) { holdCleanupReplay = false; await new Promise(resolve => { releaseCleanupReplay = resolve; }); }
+      else if (url.pathname === '/api/history/1' && delayHistory) await new Promise(resolve => setTimeout(resolve, 900));
       if (url.pathname === '/api/history/4' && delayComparison) await new Promise(resolve => { releaseComparison = resolve; });
       if (body) posts.push({ path: url.pathname, body });
       let json;
       if (url.pathname === '/api/interfaces') json = { interfaces: availableAdapters, error: null };
       else if (url.pathname === '/api/state') {
-        stateReads++; json = { status: 'complete', result: live, error: null, monitor };
+        stateReads++;
+        if (scanAwaitingPoll) { scanAwaitingPoll = false; json = { status: 'complete', progress: { phase: 'complete', completed: 2, total: 2, message: '发现完成' }, result: live, error: null, monitor, dataRevision }; }
+        else json = { status: 'complete', result: live, error: null, monitor, dataRevision };
         if (holdNextState) {
           holdNextState = false;
           json = { ...json, result: { ...live, devices: live.devices.map(device => device.deviceKey === 'gateway' ? { ...device, profile: blank() } : device) } };
@@ -108,6 +133,17 @@ async function run() {
         }
       }
       else if (url.pathname === '/api/networks') json = { networks: networkCatalogue.map(result => ({ id: result.networkId, label: result.interface.alias, cidr: result.interface.cidr, gateway: result.interface.gateway, lastSeen: result.scannedAt, deviceCount: 2 })) };
+      else if (url.pathname === '/api/data-cleanup' && req.method() === 'GET') json = { networks: cleanupCatalogue };
+      else if (url.pathname === '/api/data-cleanup' && req.method() === 'POST') {
+        const target = cleanupCatalogue.find(item => item.id === body.networkId);
+        if (!target || body.confirmed !== true || Object.keys(body).sort().join(',') !== 'confirmed,networkId') return route.fulfill({ status: 400, json: { error: '确认字段无效' } });
+        const deletedNetworkId = body.networkId === cleanupIdA ? 'network-A' : 'network-B';
+        cleanupCatalogue = cleanupCatalogue.filter(item => item.id !== body.networkId);
+        networkCatalogue = networkCatalogue.filter(result => result.networkId !== deletedNetworkId);
+        availableHistoryIds = new Set(deletedNetworkId === 'network-A' ? [3] : [1, 2, 4, 5, 6, 7]);
+        if (live?.networkId === deletedNetworkId) live = null;
+        dataRevision++; json = { deleted: true, counts: { deviceCount: target.deviceCount, scanCount: target.scanCount, eventCount: target.eventCount }, dataRevision };
+      }
       else if (url.pathname === '/api/history') { const networkId = url.searchParams.get('networkId') || 'network-A'; json = { scans: (networkId === 'network-A' ? [a, old, comparisonBefore, comparisonAfter, comparisonSame] : [b]).filter(result => !availableHistoryIds || availableHistoryIds.has(result.scanId)).map(result => ({ id: result.scanId, networkId, scannedAt: result.scannedAt, deviceCount: result.devices.length, changeCount: 1, durationMs: 120 })) }; }
       else if (url.pathname === '/api/history/1') json = { result: old };
       else if (url.pathname === '/api/history/2') json = { result: a };
@@ -133,11 +169,22 @@ async function run() {
         json = { events: filtered.slice(0, 50).map(event => ({ ...event })), unreadCount: filtered.filter(event => !event.read && event.notify).length, notificationsEnabled: monitor.notificationsEnabled };
         if (holdNextEvents) { holdNextEvents = false; await new Promise(resolve => { releaseEvents = resolve; }); }
       }
-      else if (url.pathname === '/api/scan') { live = body.interfaceId === '10' ? b : a; json = { status: 'complete', result: live, error: null, monitor }; }
+      else if (url.pathname === '/api/scan') {
+        live = body.interfaceId === '10' ? b : a;
+        if (pollScanFixture) { pollScanFixture = false; scanAwaitingPoll = true; json = { status: 'scanning', progress: { phase: 'probing', completed: 1, total: 2, message: '正在发现设备…' }, result: null, error: null, monitor }; }
+        else json = { status: 'complete', result: live, error: null, monitor };
+      }
       else return route.fulfill({ status: 404, json: { error: 'fixture path missing ' + url.pathname } });
       return route.fulfill({ json });
     });
     await page.goto(base, { waitUntil: 'networkidle' });
+    pollScanFixture = true;
+    const readsBeforeScan = stateReads;
+    await page.locator('#scan-button').click();
+    await page.waitForFunction(() => document.querySelector('#scan-button').disabled, null, { timeout: 2000 });
+    assert.equal(await page.locator('#data-cleanup-open').isDisabled(), true, 'cleanup must be unavailable while discovery is active');
+    await page.waitForFunction(() => !document.querySelector('#scan-button').disabled, null, { timeout: 4000 });
+    assert.ok(stateReads > readsBeforeScan, 'a running manual scan should poll state until it completes');
     await page.locator('#tab-history').click();
     await page.waitForFunction(() => document.querySelector('#history-compare-source option[value="4"]') && document.querySelector('#history-compare-target option[value="5"]'));
     await page.locator('#history-compare-source').selectOption('4');
@@ -603,8 +650,69 @@ async function run() {
     assert.equal(await page.locator('#history-compare-source').inputValue(), '', 'automatic network reselection must clear the comparison source');
     assert.equal(await page.locator('#history-compare-button').isDisabled(), true, 'automatic network reselection must not enable a comparison using only the new network latest snapshot');
     assert.ok((await page.locator('#history-comparison-status').innerText()).includes('选择两次'), 'automatic network reselection must replace old results with the empty state');
+    networkCatalogue = [a, b]; live = a; cleanupCatalogue = [
+      { id: cleanupIdA, label: 'Ethernet 测试网络', cidr: '192.168.50.0/24', lastSeen: a.scannedAt, deviceCount: 2, scanCount: 3, eventCount: 5 },
+      { id: cleanupIdB, label: '<img src=x onerror=alert(1)>', cidr: '192.168.60.0/24', lastSeen: b.scannedAt, deviceCount: 2, scanCount: 1, eventCount: 0 },
+    ];
+    availableHistoryIds = null; dataRevision = 0;
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForFunction(() => document.querySelector('#stat-cidr').textContent.includes('192.168.50'));
+    const secondWindow = await context.newPage();
+    secondWindow.on('pageerror', error => errors.push(error.message));
+    await secondWindow.goto(base, { waitUntil: 'networkidle' });
+    await secondWindow.waitForFunction(() => document.querySelector('#stat-cidr').textContent.includes('192.168.50'));
+    await secondWindow.locator('#tab-history').click();
+    await secondWindow.waitForFunction(() => document.querySelector('#history-scan option[value="1"]'));
+    holdCleanupReplay = true; await secondWindow.locator('#history-scan').selectOption('1');
+    for (let retry = 0; !releaseCleanupReplay && retry < 40; retry++) await secondWindow.waitForTimeout(50);
+    assert.ok(releaseCleanupReplay, 'a pre-cleanup history read should be held in flight');
+
+    await page.locator('#data-cleanup-open').click();
+    const cleanupDialog = page.getByRole('dialog', { name: '清理本地网络数据' });
+    await cleanupDialog.waitFor({ state: 'visible' });
+    await page.waitForFunction(() => document.querySelectorAll('#data-cleanup-network option').length === 3);
+    assert.equal(await page.locator('#data-cleanup-network option').count(), 3);
+    await page.locator('#data-cleanup-network').selectOption(cleanupIdA);
+    assert.equal(await page.locator('#data-cleanup-network option:checked').evaluate(el => el.textContent), 'Ethernet 测试网络 · 192.168.50.0/24');
+    assert.match(await page.locator('#data-cleanup-summary').innerText(), /设备档案 2 条 · 历史快照 3 条 · 网络变化 5 条/);
+    assert.equal(await page.locator('#data-cleanup-confirm').isChecked(), false);
+    assert.equal(await page.locator('#data-cleanup-delete').isDisabled(), true);
+    assert.match(await page.locator('.data-cleanup-warning').innerText(), /不是取证级擦除/);
+    await page.locator('#data-cleanup-confirm').check();
+    assert.equal(await page.locator('#data-cleanup-delete').isDisabled(), false);
+    await page.locator('#data-cleanup-dialog').screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-data-cleanup.png') });
+    await page.setViewportSize({ width: 320, height: 820 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'cleanup dialog must fit a 320px viewport');
+    assert.ok(await page.locator('#data-cleanup-dialog').evaluate(el => el.getBoundingClientRect().width <= innerWidth), 'cleanup dialog must not exceed the narrow viewport');
+    await page.locator('#data-cleanup-dialog').screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-data-cleanup-320.png') });
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.locator('#data-cleanup-network').selectOption(cleanupIdB);
+    assert.equal(await page.locator('#data-cleanup-network option:checked').evaluate(el => el.textContent), '<img src=x onerror=alert(1)> · 192.168.60.0/24');
+    assert.equal(await page.locator('#data-cleanup-network img').count(), 0, 'hostile network labels must be rendered as text');
+    assert.match(await page.locator('#data-cleanup-summary').innerText(), /设备档案 2 条 · 历史快照 1 条 · 网络变化 0 条/);
+    await page.locator('#data-cleanup-network').selectOption(cleanupIdA);
+    await page.locator('#data-cleanup-confirm').check();
+    await page.locator('#data-cleanup-delete').click();
+    await cleanupDialog.waitFor({ state: 'hidden' });
+    assert.deepEqual(posts.filter(post => post.path === '/api/data-cleanup').map(post => post.body),
+      [{ networkId: cleanupIdA, confirmed: true }], 'cleanup must submit only the selected opaque key and explicit confirmation');
+    await page.waitForFunction(() => document.querySelector('#network-filter').value === 'network-B');
+    await page.waitForFunction(() => document.querySelector('#data-cleanup-open').disabled === false);
+    for (let retry = 0; retry < 50 && dataRevision === 0; retry++) await page.waitForTimeout(100);
+    assert.equal(dataRevision, 1, 'the fixture should have advanced the shared local-data revision');
+    await secondWindow.waitForFunction(() => document.querySelector('#network-filter').value === 'network-B', null, { timeout: 7000 });
+    releaseCleanupReplay(); releaseCleanupReplay = null;
+    await secondWindow.waitForTimeout(150);
+    assert.equal(await secondWindow.locator('#replay-banner').isVisible(), false, 'revision changes must invalidate a delayed historical view');
+    assert.equal(await secondWindow.locator('#history-comparison-list li').count(), 0, 'revision changes must clear stale comparisons');
+    assert.equal((await secondWindow.locator('#device-list').innerText()).includes('192.168.50.'), false, 'another open window must clear the deleted network from the live view');
     assert.deepEqual(errors, []); assert.deepEqual(external, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread and network-event CSV fields, formula injection, isolation, 50-record cap and 320px layout', 'event export disabled during demo and historical replay', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'history difference CSV fields, injection protection and 320px layout', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', '375px comparison layout and keyboard'], screenshots: output }));
-  } finally { await browser.close(); }
+    assert.deepEqual(errors, []); assert.deepEqual(external, []);
+    await secondWindow.close();
+    console.log(JSON.stringify({ result: 'PASS', checks: ['profile persistence and safe text', 'dirty form survives polling', 'explicit save failure', 'monitor interval/start/stop/mute', 'event read/unread and network-event CSV fields, formula injection, isolation, 50-record cap and 320px layout', 'event export disabled during demo and historical replay', 'explicit desktop notification permission', 'privacy-safe notification content and deduplication', 'history comparison categories and empty state', 'history difference CSV fields, injection protection and 320px layout', 'same-network snapshot validation and stale-response cancellation', 'comparison hostile-name text rendering', 'filtered CSV export and historical source label', 'history network isolation and historical export', 'demo/replay isolation', 'per-network data cleanup, exact confirmation, hostile label safety, cross-window revision invalidation and delayed-history discard', '375px comparison layout and keyboard'], screenshots: output }));
+  } finally {
+    await browser.close();
+    if (fixtureServer) await new Promise(resolve => fixtureServer.close(resolve));
+  }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });
