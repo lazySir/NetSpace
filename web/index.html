@@ -77,6 +77,7 @@
           <div class="search-field"><svg class="icon" aria-hidden="true"><use href="#i-search"/></svg><label class="sr-only" for="device-search">搜索设备名称、IP 或 MAC</label><input type="search" id="device-search" placeholder="搜索名称、IP 或 MAC" autocomplete="off"></div>
           <div class="status-filter"><label class="sr-only" for="device-status-filter">按发现状态筛选设备</label><span class="filter-prompt" aria-hidden="true">STATUS</span><select id="device-status-filter"><option value="">全部发现状态</option><option value="online">已确认在线</option><option value="resolved">已解析 · 在线未确认</option><option value="cached">系统缓存 · 在线未确认</option><option value="unverified">待确认</option></select><label class="review-filter" for="needs-review-filter"><input id="needs-review-filter" type="checkbox">待复核</label></div>
           <div class="group-filter"><label class="sr-only" for="device-group-filter">按设备档案分组筛选</label><span class="filter-prompt" aria-hidden="true">GROUP</span><select id="device-group-filter"><option value="">全部分组</option></select></div>
+          <div class="archive-entry"><button id="archive-open" class="compact-button" type="button" disabled aria-describedby="archive-open-help">查看已保存设备</button><p id="archive-open-help">找回曾经发现的设备、别名和备注。</p></div>
           <div class="list-caption"><span>设备 / IP 地址</span><span id="filter-info">全部设备</span></div>
           <ul id="device-list" class="device-list" aria-label="已发现设备"></ul>
           <div id="list-empty" class="list-empty"><span class="empty-line"></span><p>设备将在发现后显示</p></div>
@@ -121,6 +122,24 @@
       <p class="privacy-note">本机发现 · 本地呈现 <span>—</span> 设备结果来自当前扫描及系统邻居记录，缓存记录不等于当前在线。</p>
     </main>
   </div>
+  <dialog id="device-archive-dialog" class="device-check-dialog device-archive-dialog" aria-labelledby="device-archive-title" aria-describedby="archive-intro">
+    <button id="archive-dismiss" type="button" class="device-check-dismiss" aria-label="关闭已保存设备档案库">关闭 <span aria-hidden="true">×</span></button>
+    <div class="device-check-dialog-heading"><span class="eyebrow">DEVICE ARCHIVE // 本机档案库</span><h2 id="device-archive-title">找回曾经发现的设备</h2><p id="archive-intro">按网络查看本机保存的设备档案，包括最近一次没有发现的设备。打开和搜索只读取本地记录。</p></div>
+    <div class="archive-toolbar">
+      <div class="archive-network-field"><label for="archive-network">记录所属网络</label><select id="archive-network" autofocus><option value="">正在读取本地网络…</option></select></div>
+      <button id="archive-refresh" type="button" class="compact-button">刷新本地记录</button>
+      <div class="archive-search-field"><label for="archive-search">查找设备档案</label><input type="search" id="archive-search" placeholder="名称、分组、IP 或 MAC" maxlength="200" autocomplete="off" aria-controls="archive-list" aria-describedby="archive-search-help"></div>
+      <div class="archive-filter-field"><label for="archive-filter">筛选记录</label><select id="archive-filter" aria-controls="archive-list"><option value="all">全部档案</option><option value="missing">最近一次未见</option><option value="review">待复核设备</option></select></div>
+    </div>
+    <p id="archive-search-help" class="archive-help-text">名称和分组支持模糊搜索；IP 和 MAC 按片段匹配。</p>
+    <p id="archive-summary" class="archive-summary" role="status" aria-live="polite" aria-atomic="true"></p>
+    <p id="archive-error" class="device-check-error" role="alert" hidden></p>
+    <ul id="archive-list" class="saved-device-list" aria-label="所选网络的已保存设备档案"></ul>
+    <p id="archive-empty" class="archive-help-text" hidden></p>
+    <button id="archive-more" type="button" class="compact-button archive-more" hidden>再显示 50 条</button>
+    <p id="archive-notice" class="archive-help-text archive-observation-note">“最近一次未见”只表示所选网络最新保存的发现中没有这条记录，不等于已确认离线。档案可能因地址变化、MAC 随机化而分开保存，不代表独立的物理设备。这里显示打开或刷新时的记录；点击“刷新本地记录”查看最新保存的资料。</p>
+    <div class="device-check-actions"><button id="archive-close" type="button" class="button button-secondary">关闭档案库</button></div>
+  </dialog>
   <dialog id="device-check-dialog" class="device-check-dialog" aria-labelledby="device-check-title" aria-describedby="device-check-intro">
     <button id="device-check-dismiss" type="button" class="device-check-dismiss" aria-label="关闭服务检查窗口">关闭 <span aria-hidden="true">×</span></button>
     <div class="device-check-dialog-heading"><span class="eyebrow">SERVICE CHECK // 单台设备</span><h2 id="device-check-title">检查这台设备的服务</h2><p id="device-check-intro">会真实尝试连接下面 7 个常见服务端口，每个仅尝试一次。不输入密码、不发送攻击内容、不修改设备设置。目标设备可能记录这些连接。</p></div>

@@ -3,6 +3,7 @@ import { buildDeviceCsv } from '/csv.js';
 import { createDeviceCheck } from '/device-check.js';
 import { createWebHeaderCheck } from '/web-header-check.js';
 import { createDataCleanup } from '/data-cleanup.js';
+import { createDeviceArchive } from '/device-archive.js';
 const $ = (id) => document.getElementById(id);
 const ui = Object.fromEntries([...document.querySelectorAll('[id]')].map((element) => [element.id, element]));
 const kindNames = { self: '本机', gateway: '默认网关', device: '网络设备' };
@@ -37,6 +38,7 @@ let workspace = null;
 let deviceCheck = null;
 let webHeaderCheck = null;
 let dataCleanup = null;
+let deviceArchive = null;
 let backupInProgress = false;
 
 function makeDemoResult() {
@@ -327,6 +329,7 @@ function render() {
   deviceCheck?.sync();
   webHeaderCheck?.sync();
   dataCleanup?.observe(realState);
+  deviceArchive?.observe(realState);
   if (deviceCheck?.busy || webHeaderCheck?.busy) ui['monitor-toggle'].disabled = true;
 }
 
@@ -449,6 +452,10 @@ dataCleanup = createDataCleanup({
     try { applyState(await api('/api/state')); } catch { /* The revision already invalidated local caches. */ }
   },
 });
+deviceArchive = createDeviceArchive({
+  ui, api, isBooting: () => booting, isStopped: () => stopped, isDemo: () => demo,
+  getNetworkId: () => activeResult()?.networkId || '',
+});
 deviceCheck = createDeviceCheck({
   ui, api, rerender: render,
   readContext: () => {
@@ -465,7 +472,7 @@ webHeaderCheck = createWebHeaderCheck({
       current: Boolean(result?.networkId && realState.result?.networkId === result.networkId && realState.result?.scanId === result.scanId && realState.result?.scannedAt === result.scannedAt) };
   },
 });
-window.addEventListener('pagehide', () => { clearTimeout(pollTimer); deviceCheck?.destroy(); webHeaderCheck?.destroy(); dataCleanup?.destroy(); workspace?.destroy(); scene?.destroy(); });
+window.addEventListener('pagehide', () => { clearTimeout(pollTimer); deviceArchive?.destroy(); deviceCheck?.destroy(); webHeaderCheck?.destroy(); dataCleanup?.destroy(); workspace?.destroy(); scene?.destroy(); });
 updateRotate();
 initializeScene();
 initialize().then(() => workspace.initialize());

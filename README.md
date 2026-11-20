@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.17.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.18.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -61,6 +61,10 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 
 ## 能做什么
 
+1.18.0 新增“已保存设备档案库”，能找回最近一次未见的设备及其别名、分组、备注。下图来自虚构网络档案，窗口不会把旧记录当成当前在线设备。
+
+![NetSpace 已保存设备档案库：按网络查找设备、筛选最近一次未见和待复核档案](docs/images/netspace-device-archive.png)
+
 ```text
 01  DISCOVER   查看当前接口、默认网关和可解析的邻居
 02  VISUALIZE  在可旋转、可缩放的 3D 场景中查看节点
@@ -83,6 +87,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 19  WEB HEADERS 检查上一步已确认开放网页端口返回的固定安全头名称
 20  CLEANUP    查看数量并永久清理某一个网络的本地数据库记录
 21  START      打开页面先等待手动发现，也可先体验虚构演示
+22  ARCHIVE    按网络查找所有已保存设备，包括最近一次未见的档案
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
@@ -96,6 +101,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 - 可按网络查看设备档案、历史快照与变化记录数量，并一次清理所选网络在本地数据库中的所有相关记录；清理需明确勾选确认，其他网络与全局提醒设置保留。已下载的备份、报告和导出文件是独立文件，不会一起删除。
 - Three.js 和页面资源随项目提供，界面可以离线加载。
 - SQLite 设备档案和历史数据在应用重启后保留。
+- 已保存设备档案库支持按网络浏览、名称/分组模糊搜索、IP/MAC 片段搜索，以及“最近一次未见”“待复核”筛选。先显示 50 条，可继续显示；打开或手动刷新后读取本地记录，搜索无需网络请求。
 - 可选桌面提醒需在界面中手动授权；无权限或不支持时继续使用页面内提醒。桌面提醒只在 NetSpace 页面打开期间运行，且不显示设备名称、IP 或 MAC。
 - 服务暴露检查必须手动选择设备并在每次开始前勾选授权；只对该设备的固定 7 个 TCP 端口尝试连接。结果只留在本次应用进程内，不写入设备档案、历史或数据库备份。
 - 已结束且有结果的检查可一键导出中文文本报告，取消或出错后的部分结果也可保留，其余端口明确标为“未检查”。报告在本机生成，不增加设备连接；保存的文件包含设备名称、IP 和结果。
@@ -132,6 +138,19 @@ python app.py --no-browser --port 8765
 启动提示和演示入口支持 320 px 窄屏。截图只含虚构测试网卡。
 
 ![NetSpace 320 px 窄屏手动启动页](docs/images/netspace-manual-start-320.png)
+
+### 找回曾经发现的设备
+
+1. 在“设备”页点击“查看已保存设备”。不需要先发起新的发现；退出演示后，也可查看以前已经保存的真实网络档案。
+2. 选择记录所属网络，输入别名、主机名称、分组或地址。名称与分组允许少量拼写差异；IP 和 MAC 按连续片段匹配，MAC 也支持省略分隔符。
+3. 选择“最近一次未见”找回最新保存的发现中缺少的档案，或用“待复核设备”查找尚未认识且未忽略的其他设备。卡片可查看首次/最近发现时间、最近地址、MAC 和已保存备注。
+4. 超过 50 条时点击“再显示”继续浏览。需要最新资料时点击“刷新本地记录”；窗口不会自动发起发现、服务检查或更改档案。
+
+“最近一次有记录”也不保证现在在线；随机 MAC、多地址或 IP 重用可能对应多条档案，窗口不会按相同 IP/MAC 自动合并。演示模式里档案库停用，避免混合真实记录与虚构设备。后台其他已手动启动的任务仍按原有设置运行。
+
+当前版本会一次读取所选网络的全部档案，在本地建立搜索索引并分批显示；长期积累非常多档案时，服务端分页是后续改进方向。
+
+![NetSpace 320 px 已保存设备档案库：网络、搜索与筛选控件纵向排列](docs/images/netspace-device-archive-320.png)
 
 ### 清理一个网络的本地记录
 
@@ -279,6 +298,8 @@ Windows adapters / neighbor cache / native address resolution
 
 ## 路线图
 
+- **已交付 1.18.0**：独立的已保存设备档案库，保留最近一次未见设备的可见性。
+- **优先继续**：单设备活动时间线、拓扑图片导出、备份文件检查与恢复预览、大档案服务端分页。范围、边界和 GitHub 一手来源见 [后续功能方向](docs/feature-directions-2026-11-20.md)。这些候选方向尚未实现。
 - 更好的 MAC 随机化和设备身份合并处理。
 - 可插拔发现适配器、拓扑过滤与时间轴。
 - 远程只读查看（如实现，将默认关闭并加入显式访问控制）。
@@ -289,6 +310,7 @@ Windows adapters / neighbor cache / native address resolution
 
 ### 本轮 GitHub 调研与择用
 
+- **1.18.0 调研**：[WatchYourLAN](https://github.com/aceberg/WatchYourLAN/tree/ca9f644bccba41cdb3db952b828137fa53c2f640)（MIT）的主机历史和 [NetAlertX](https://github.com/netalertx/NetAlertX/tree/85dec4ae6837d177c5fee203efb940ae6eb58255)（GPL-3.0）的设备资产视图用于比较后续功能方向，未复制它们的代码。档案库实际复用已随程序提供的 Fuse.js 7.5.0 建立本地搜索索引，无新增第三方依赖；具体取舍见[调研记录](docs/feature-directions-2026-11-20.md)。
 - **已复用**：[Three.js](https://github.com/mrdoob/three.js) 的本地 3D 渲染与 OrbitControls（MIT）；[Fuse.js v7.5.0](https://github.com/krisk/Fuse/tree/v7.5.0) 的离线名称模糊搜索（Apache-2.0，提交 `45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a`）。相关上游代码和许可证已随仓库提供。
 - **本轮实现选择**：使用 [CPython 标准库 socket](https://docs.python.org/3.8/library/socket.html#socket.create_connection) 完成有限的 TCP connect 检查，无新增第三方扫描器、命令行工具或驱动依赖。CPython 的 PSF 及相关运行时许可随打包程序提供；这里使用标准库 API，没有复制其他扫描器源码。
 - **参考，未集成 Nmap**：[Nmap 官方 TCP connect 说明](https://nmap.org/book/scan-methods-connect-scan.html) 用于核对连接方式和日志影响。核查的[官方仓库提交](https://github.com/nmap/nmap/tree/bb81d1392145080d93ff50d91e1598bdde5248e3) 使用 [NPSL 0.95](https://github.com/nmap/nmap/blob/bb81d1392145080d93ff50d91e1598bdde5248e3/LICENSE)；[官方法律说明](https://nmap.org/book/man-legal.html) 还列出 Npcap 独立分发限制。本轮只需固定 7 个端口的连接观察，因此不捆绑 Nmap 或 Npcap。
@@ -297,6 +319,14 @@ Windows adapters / neighbor cache / native address resolution
 本仓库暂未指定项目自身的开源许可证。公开可见源码不代表自动授予复制、修改或分发许可；如需复用，请先联系作者确认。
 
 ## 迭代记录
+
+### 1.18.0 — 已保存设备档案库（2026-11-21）
+
+- 新增独立只读档案库，按保存的网络找回设备别名、分组、备注、首次/最近发现时间及最近地址，包括最新一次没有发现的旧记录。
+- 复用本地 Fuse.js 搜索名称和分组；地址片段精确匹配，避免把相邻 IP/MAC 当作同一搜索结果。提供最近一次未见、待复核筛选，默认分批显示 50 条。
+- 档案以网络及稳定记录标识隔离，不按相同 IP/MAC 合并，不复用当前 3D 或服务检查目标；演示模式停用真实档案入口。迟到请求在网络切换、关闭重开和数据清理后失效。
+- 使用文本节点展示名称和备注，补充失败重试、空记录提示、键盘关闭及 320 px 布局；保存记录的旧在线状态不会显示为当前在线判断。
+- 查询 GitHub 一手来源并整理后续方向，补充新手步骤、桌面和窄屏虚构截图。浏览器、后端和 Windows 打包的验证范围见 [1.18.0 验证记录](docs/verification-1.18.0-2026-11-21.md)。开发验证只使用虚构数据和本机回环服务。
 
 ### 1.17.0 — 手动开始与新手演示入口（2026-11-20）
 

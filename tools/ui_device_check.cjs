@@ -251,17 +251,19 @@ async function run() {
       assert.equal(await page.locator('#device-check-start').isDisabled(), true, 'failure retry also requires fresh consent');
       await page.locator('#device-check-close').click();
     }
-    // A late POST response must not reopen a dialog or attach the old result to another network.
+    // A late response must keep the dialog closed, then stay isolated when switching networks.
     await page.locator('#device-check-open').click(); delayNextPost = true;
     await page.locator('#device-check-consent').check(); await page.locator('#device-check-start').click();
     for (let n = 0; !releasePost && n < 50; n++) await page.waitForTimeout(20);
     assert.ok(releasePost); await page.locator('#device-check-close').click();
+    assert.equal(await page.locator('#interface-select').isDisabled(), true, 'a pending start keeps adapter switching locked');
+    check = { ...check, status: 'complete', results: allResults, completed: 7 };
+    releasePost(); releasePost = null;
     await page.locator('#interface-select').selectOption('10');
-    releasePost(); releasePost = null; await page.waitForTimeout(150);
     assert.equal(await dialog.isVisible(), false);
     assert.equal(await page.locator('#device-check-consent').isChecked(), false);
     assert.equal(await page.locator('#device-check-results li').count(), 0);
-    live = b; check = { ...check, status: 'complete', results: allResults, completed: 7 };
+    live = b;
     await page.waitForFunction(() => document.querySelector('#stat-total').textContent === '03');
     await page.locator('#device-list button[data-device-id="198.51.100.30"]').click();
     await page.locator('#device-check-open').click();
