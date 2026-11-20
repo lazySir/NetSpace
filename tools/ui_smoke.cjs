@@ -44,10 +44,19 @@ async function run() {
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith(base + '/')) external.push(request.url()); });
   page.on('response', response => { if (new URL(response.url()).pathname === '/vendor/fuse.min.js') fuseAssetResponse = response; });
   let current = { status: 'idle', progress: { phase: 'idle', completed: 0, total: 0, message: '准备就绪' }, result: null, error: null };
+  let scanCalls = 0;
   let failBackup = false;
+  await page.route('**/api/**', route => {
+    const pathname = new URL(route.request().url()).pathname;
+    const values = { '/api/monitor': { enabled: false, interfaceId: null, intervalSeconds: 300, notificationsEnabled: false }, '/api/networks': { networks: [] }, '/api/history': { scans: [] }, '/api/events': { events: [], unreadCount: 0, notificationsEnabled: false }, '/api/devices': { devices: [] } };
+    return route.fulfill(route.request().method() === 'GET' && values[pathname]
+      ? { json: values[pathname] }
+      : { status: 404, json: { error: 'No synthetic fixture for ' + pathname } });
+  });
   await page.route('**/api/interfaces', route => route.fulfill({ json: { interfaces, error: null } }));
   await page.route('**/api/state', route => route.fulfill({ json: current }));
   await page.route('**/api/scan', async route => {
+    scanCalls++;
     const adapter = interfaces.find(x => x.id === route.request().postDataJSON().interfaceId);
     current = { status: 'complete', progress: { phase: 'complete', completed: 253, total: 253, message: '设备发现完成' }, result: resultFor(adapter), error: null };
     await route.fulfill({ status: 202, json: current });
@@ -74,7 +83,12 @@ async function run() {
   assert.equal(theme.browserColor, '#050907', 'browser chrome matches the console theme');
   assert.match(theme.metricFont, /Consolas|Cascadia Code/, 'network metrics use a monospace typeface');
   assert.match(theme.topologyGrid, /linear-gradient/, 'topology includes a terminal grid overlay');
+  await page.waitForFunction(() => !document.querySelector('#scan-button').disabled);
+  assert.equal(scanCalls, 0, 'page load must leave discovery idle until the user starts it');
+  assert.equal(await page.locator('#scene-demo-button').isVisible(), true, 'idle view offers a synthetic demo shortcut');
+  await page.locator('#scan-button').click();
   await page.locator('#stat-total').filter({ hasText: '3' }).waitFor();
+  assert.equal(scanCalls, 1, 'explicit discovery posts exactly once');
   assert.equal(await page.locator('#backup-button').isDisabled(), false, 'backup is enabled after the local service connects');
   const backupDownloadPromise = page.waitForEvent('download');
   await page.locator('#backup-button').click();

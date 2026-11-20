@@ -6,7 +6,7 @@ const path = require('node:path');
 const { chromium } = require('../.tools/qa/node_modules/playwright');
 const webRoot = path.resolve(__dirname, '../web');
 const output = path.resolve(__dirname, '../artifacts');
-const images = path.resolve(__dirname, '../docs/images');
+const images = process.env.NETSPACE_DOC_IMAGES ? path.resolve(process.env.NETSPACE_DOC_IMAGES) : path.resolve(__dirname, '../docs/images');
 const adapters = [
   { id: '9', alias: '虚构测试网络 A', ip: '192.0.2.20', gateway: '192.0.2.1', cidr: '192.0.2.0/24', scanCidr: '192.0.2.0/24' },
   { id: '10', alias: '虚构测试网络 B', ip: '198.51.100.20', gateway: '198.51.100.1', cidr: '198.51.100.0/24', scanCidr: '198.51.100.0/24' },

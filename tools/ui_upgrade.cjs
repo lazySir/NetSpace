@@ -8,6 +8,7 @@ let base = process.env.NETSPACE_URL || '';
 let fixtureServer = null;
 const webRoot = path.resolve(__dirname, '../web');
 const output = path.resolve(__dirname, '../artifacts');
+const images = process.env.NETSPACE_DOC_IMAGES ? path.resolve(process.env.NETSPACE_DOC_IMAGES) : path.resolve(__dirname, '../docs/images');
 const adapters = [
   { id: '9', alias: 'Ethernet', ip: '192.168.50.20', gateway: '192.168.50.1', cidr: '192.168.50.0/24', scanCidr: '192.168.50.0/24' },
   { id: '10', alias: 'Wi-Fi', ip: '192.168.60.20', gateway: '192.168.60.1', cidr: '192.168.60.0/24', scanCidr: '192.168.60.0/24' },
@@ -43,6 +44,7 @@ function parseCsv(text) {
 }
 async function run() {
   fs.mkdirSync(output, { recursive: true });
+  fs.mkdirSync(images, { recursive: true });
   if (!base) {
     fixtureServer = http.createServer((request, response) => {
       const pathname = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname);
@@ -97,7 +99,7 @@ async function run() {
     const comparisonSame = { ...comparisonAfter, scanId: 7, scannedAt: '2026-11-19T03:00:00Z' };
     const comparisonForeign = snapshot(adapters[1], 'network-B', 6);
     let live = a, failSave = false, stateReads = 0, delayHistory = false, availableAdapters = adapters, networkCatalogue = [a, b], availableHistoryIds = null;
-    let pollScanFixture = false, scanAwaitingPoll = false;
+    let pollScanFixture = false, scanAwaitingPoll = false, scanCompletion = null, releaseScanCompletion = null;
     let releaseEvents = null, releaseMonitor = null, releaseOldState = null, releaseComparison = null, releaseCleanupReplay = null, holdCleanupReplay = false, holdNextEvents = false, holdNextMonitor = false, holdNextState = false, delayComparison = false, crossNetworkComparison = false;
     const cleanupIdA = 'a'.repeat(32), cleanupIdB = 'b'.repeat(32);
     let dataRevision = 0;
@@ -124,7 +126,7 @@ async function run() {
       if (url.pathname === '/api/interfaces') json = { interfaces: availableAdapters, error: null };
       else if (url.pathname === '/api/state') {
         stateReads++;
-        if (scanAwaitingPoll) { scanAwaitingPoll = false; json = { status: 'complete', progress: { phase: 'complete', completed: 2, total: 2, message: '发现完成' }, result: live, error: null, monitor, dataRevision }; }
+        if (scanAwaitingPoll) { await scanCompletion; scanAwaitingPoll = false; json = { status: 'complete', progress: { phase: 'complete', completed: 2, total: 2, message: '发现完成' }, result: live, error: null, monitor, dataRevision }; }
         else json = { status: 'complete', result: live, error: null, monitor, dataRevision };
         if (holdNextState) {
           holdNextState = false;
@@ -179,10 +181,15 @@ async function run() {
     });
     await page.goto(base, { waitUntil: 'networkidle' });
     pollScanFixture = true;
+    scanCompletion = new Promise(resolve => { releaseScanCompletion = resolve; });
     const readsBeforeScan = stateReads;
-    await page.locator('#scan-button').click();
-    await page.waitForFunction(() => document.querySelector('#scan-button').disabled, null, { timeout: 2000 });
-    assert.equal(await page.locator('#data-cleanup-open').isDisabled(), true, 'cleanup must be unavailable while discovery is active');
+    const polledScan = page.waitForRequest(request => scanAwaitingPoll && new URL(request.url()).pathname === '/api/state', { timeout: 4000 });
+    try {
+      await page.locator('#scan-button').click();
+      await polledScan;
+      assert.equal(await page.locator('#scan-button').isDisabled(), true, 'scan completion stays deferred while checking its active controls');
+      assert.equal(await page.locator('#data-cleanup-open').isDisabled(), true, 'cleanup must be unavailable while discovery is active');
+    } finally { releaseScanCompletion(); }
     await page.waitForFunction(() => !document.querySelector('#scan-button').disabled, null, { timeout: 4000 });
     assert.ok(stateReads > readsBeforeScan, 'a running manual scan should poll state until it completes');
     await page.locator('#tab-history').click();
@@ -192,12 +199,12 @@ async function run() {
     await page.locator('#history-compare-button').click();
     await page.waitForFunction(() => document.querySelector('#history-comparison-status').textContent.includes('新增 1'));
     await page.evaluate(() => { document.querySelector('#toast').hidden = true; document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-history-comparison.png'), fullPage: true });
+    await page.screenshot({ path: path.join(images, 'netspace-history-comparison.png'), fullPage: true });
     events[0].name = '工作站';
     await page.locator('#tab-events').click();
     await page.waitForFunction(() => document.querySelector('#event-list').textContent.includes('工作站') && !document.querySelector('#events-csv-button').disabled);
     await page.evaluate(() => { document.querySelector('#toast').hidden = true; document.activeElement.blur(); window.scrollTo(0, 0); });
-    await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-events-export.png'), fullPage: true });
+    await page.screenshot({ path: path.join(images, 'netspace-events-export.png'), fullPage: true });
     await page.locator('#tab-devices').click();
     assert.equal(await page.evaluate(() => window.notificationPermissionRequests), 0, 'page load must not request desktop notification permission');
     await page.locator('#desktop-notifications-toggle').waitFor();
@@ -358,6 +365,7 @@ async function run() {
     await page.waitForTimeout(3300);
     assert.equal(await page.evaluate(() => window.newDeviceToasts), 1, 'new-device notification must stay deduplicated across repeated event refreshes');
     await page.locator('#events-read').click();
+    await page.waitForFunction(() => document.querySelector('#unread-count').textContent === '0' && !document.querySelector('#mute-toggle').disabled);
     const toastCount = await page.evaluate(() => window.newDeviceToasts);
     holdNextEvents = true;
     for (let retry = 0; !releaseEvents && retry < 60; retry++) await page.waitForTimeout(100);
@@ -680,11 +688,11 @@ async function run() {
     assert.match(await page.locator('.data-cleanup-warning').innerText(), /不是取证级擦除/);
     await page.locator('#data-cleanup-confirm').check();
     assert.equal(await page.locator('#data-cleanup-delete').isDisabled(), false);
-    await page.locator('#data-cleanup-dialog').screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-data-cleanup.png') });
+    await page.locator('#data-cleanup-dialog').screenshot({ path: path.join(images, 'netspace-data-cleanup.png') });
     await page.setViewportSize({ width: 320, height: 820 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'cleanup dialog must fit a 320px viewport');
     assert.ok(await page.locator('#data-cleanup-dialog').evaluate(el => el.getBoundingClientRect().width <= innerWidth), 'cleanup dialog must not exceed the narrow viewport');
-    await page.locator('#data-cleanup-dialog').screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-data-cleanup-320.png') });
+    await page.locator('#data-cleanup-dialog').screenshot({ path: path.join(images, 'netspace-data-cleanup-320.png') });
     await page.setViewportSize({ width: 1600, height: 1100 });
     await page.locator('#data-cleanup-network').selectOption(cleanupIdB);
     assert.equal(await page.locator('#data-cleanup-network option:checked').evaluate(el => el.textContent), '<img src=x onerror=alert(1)> · 192.168.60.0/24');

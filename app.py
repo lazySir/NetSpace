@@ -31,7 +31,7 @@ from device_check import SERVICES, probe_tcp_port
 from web_header_check import CHECKS_BY_SCHEME, check_http_headers
 
 
-VERSION = '1.16.0'
+VERSION = '1.17.0'
 DEVICE_CHECK_FRESH_SECONDS = 300
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'

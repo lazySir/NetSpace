@@ -208,7 +208,6 @@ async function initialize() {
   } else if (!initialError) initialError = stateResponse.reason.message;
   if (initialError) { realState = { ...realState, status: 'error', error: initialError }; render(); return false; }
   render();
-  if (interfaceId && realState.status === 'idle' && !activeResult()) startScan();
   return true;
 }
 
@@ -310,10 +309,10 @@ function render() {
   ui['footer-dot'].style.background = error || stopped ? 'var(--amber)' : demo ? 'var(--amber)' : 'var(--mint)';
   const showEmpty = !devices.length || !visibleDevices.length || sceneError;
   ui['scene-empty'].hidden = !showEmpty;
-  let emptyTitle = '等待发现你的网络'; let emptyDescription = '选择网络适配器，点击“发现设备”开始探索。';
+  let emptyTitle = '等待你开始发现'; let emptyDescription = '选择网络适配器后，点击右上角“发现设备”；也可先查看虚构演示。';
   if (sceneError && devices.length) { emptyTitle = '当前环境无法显示三维空间'; emptyDescription = '设备数据已加载。你仍可通过设备列表查看详情和导出结果。'; }
   else if (filtersActive() && !visibleDevices.length && devices.length) { emptyTitle = query ? '未找到匹配设备' : needsReview && !statusFilter && !groupFilter ? '没有待复核设备' : '没有符合条件的设备'; emptyDescription = query ? '调整搜索关键词或筛选条件，继续探索网络空间。' : '更改左侧筛选条件，查看其他设备。'; }
-  else if (booting) { emptyTitle = '正在连接本机网络'; emptyDescription = '读取网络适配器后，将开始发现设备。'; }
+  else if (booting) { emptyTitle = '正在读取本机网络'; emptyDescription = '读取本机网卡信息后，等待你手动开始发现。'; }
   else if (!interfaceId && !demo) { emptyTitle = '没有可用的网络适配器'; emptyDescription = error || '请连接 Wi-Fi 或有线局域网，然后重新读取。'; }
   else if (error && !devices.length) { emptyTitle = '暂时无法发现设备'; emptyDescription = error; }
   else if (scanning && !demo) { emptyTitle = '正在发现身边的设备'; emptyDescription = '地址解析与系统记录采集正在进行，完成后将在此显示。'; }
@@ -321,6 +320,7 @@ function render() {
   text('scene-empty-title', emptyTitle); text('scene-empty-description', emptyDescription);
   ui['retry-button'].hidden = demo || booting || scanning || (!error && Boolean(interfaceId));
   ui['retry-button'].textContent = interfaces.length ? '重新发现' : '重新读取适配器';
+  ui['scene-demo-button'].hidden = demo || booting || scanning || stopped || historical || Boolean(devices.length);
   text('scene-hint', sceneError ? '设备列表与导出功能仍可使用' : '拖动旋转 · 滚轮缩放 · 点击设备查看');
   renderList(visibleDevices, devices.length); renderDetails(devices.find((device) => device.id === selectedId), result); renderScene(result, visibleDevices);
   workspace?.render(result, devices.find((device) => device.id === selectedId));
@@ -338,6 +338,7 @@ function setDemo(value) {
 }
 
 ui['demo-toggle'].addEventListener('click', () => setDemo(!demo));
+ui['scene-demo-button'].addEventListener('click', () => setDemo(true));
 ui['leave-demo'].addEventListener('click', () => setDemo(false));
 async function retryDiscovery() { const refreshed = await initialize(); if (refreshed && interfaceId && !isScanning()) startScan(); }
 ui['scan-button'].addEventListener('click', () => realState.status === 'error' ? retryDiscovery() : startScan());

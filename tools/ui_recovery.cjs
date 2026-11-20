@@ -1,6 +1,7 @@
 // Optional browser recovery checks. Run against the local source server on port 8765.
 // Uses isolated API fixtures; no LAN scans or external requests are made.
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { chromium } = require('../.tools/qa/node_modules/playwright');
 const base = process.env.NETSPACE_URL || 'http://127.0.0.1:8765';
 const executablePath = process.env.NETSPACE_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
@@ -29,8 +30,107 @@ async function withPage(context, run) {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  // Catch every API request before installing narrower per-scenario fixtures.
+  // Unmatched reads use fabricated empty data; unmatched writes never reach
+  // the source server, even when a regression introduces a new request.
+  await page.route('**/api/**', (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    const values = {
+      '/api/monitor': { enabled: false, intervalSeconds: 300, interfaceId: null, notificationsEnabled: false },
+      '/api/networks': { networks: [] }, '/api/history': { scans: [] },
+      '/api/events': { events: [], unreadCount: 0, notificationsEnabled: false },
+      '/api/devices': { devices: [] },
+    };
+    return route.fulfill(route.request().method() === 'GET' && values[pathname]
+      ? { json: values[pathname] }
+      : { status: 404, json: { error: 'No synthetic fixture for ' + pathname } });
+  });
   try { await run(page); assert.deepEqual(errors, [], 'recovery flow must have no runtime errors'); }
   finally { await page.close(); }
+}
+
+async function startupNoImplicitDiscovery(context) {
+  await withPage(context, async (page) => {
+    let current = state('idle');
+    const scanBodies = [];
+    await page.route('**/api/interfaces', (route) => route.fulfill({ json: { interfaces: [adapterA, adapterB], error: null } }));
+    await page.route('**/api/state', (route) => route.fulfill({ json: current }));
+    await page.route('**/api/scan', (route) => {
+      const body = route.request().postDataJSON();
+      scanBodies.push(body);
+      current = state('complete', result(body.interfaceId === 'B' ? adapterB : adapterA));
+      return route.fulfill({ status: 202, json: current });
+    });
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.waitForFunction(() => !document.querySelector('#interface-select').disabled);
+    assert.deepEqual(scanBodies, [], 'opening an idle app must not discover network devices');
+    assert.equal(await page.locator('#device-list button').count(), 0);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForFunction(() => !document.querySelector('#interface-select').disabled);
+    assert.deepEqual(scanBodies, [], 'reloading an idle app must not discover network devices');
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.evaluate(() => document.activeElement.blur());
+    await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-manual-start.png'), fullPage: true });
+    await page.setViewportSize({ width: 320, height: 800 });
+    const intervalBox = await page.locator('#monitor-interval').boundingBox();
+    assert.ok(intervalBox && intervalBox.width >= 86, 'monitor interval text must retain readable width at 320px');
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'manual-start instructions fit a 320px screen');
+    assert.equal(await page.locator('#scene-demo-button').isVisible(), true, 'startup demo shortcut remains available at 320px');
+    await page.screenshot({ path: path.resolve(__dirname, '../docs/images/netspace-manual-start-320.png'), fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.locator('#scene-demo-button').click();
+    await page.locator('#demo-banner').waitFor({ state: 'visible' });
+    assert.ok(Number(await page.locator('#stat-total').innerText()) > 1, 'the startup demo shortcut shows fabricated devices');
+    assert.deepEqual(scanBodies, [], 'entering the startup demo must not start discovery');
+    await page.locator('#leave-demo').click();
+    await page.locator('#demo-banner').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#device-list button').count(), 0, 'leaving demo returns to the idle real view');
+    await page.locator('#interface-select').selectOption('B');
+    await page.locator('#demo-toggle').click();
+    await page.locator('#demo-banner').waitFor({ state: 'visible' });
+    await page.locator('#demo-toggle').click();
+    await page.locator('#demo-banner').waitFor({ state: 'hidden' });
+    assert.deepEqual(scanBodies, [], 'switching adapters and entering/leaving demo with the header switch must not discover devices');
+    await page.locator('#scan-button').click();
+    await visibleAdapter(page, adapterB);
+    assert.deepEqual(scanBodies, [{ interfaceId: 'B' }], 'only the explicit discovery action posts the selected adapter once');
+    await page.reload({ waitUntil: 'networkidle' });
+    await visibleAdapter(page, adapterB);
+    assert.equal(scanBodies.length, 1, 'reopening a completed result must not initiate another scan');
+  });
+}
+
+async function disconnectedDemoStartup(context) {
+  await withPage(context, async (page) => {
+    let adapterReads = 0, scanCalls = 0;
+    await page.route('**/api/interfaces', (route) => {
+      adapterReads++;
+      return route.fulfill({ json: { interfaces: [], error: null } });
+    });
+    await page.route('**/api/state', (route) => route.fulfill({ json: state('idle') }));
+    await page.route('**/api/scan', (route) => {
+      scanCalls++;
+      return route.fulfill({ status: 400, json: { error: 'No adapter exists in this fixture' } });
+    });
+    await page.goto(base, { waitUntil: 'networkidle' });
+    await page.locator('#retry-button').waitFor({ state: 'visible' });
+    assert.equal(await page.locator('#scan-button').isDisabled(), true, 'discovery is unavailable without a connected adapter');
+    assert.equal(await page.locator('#scene-demo-button').isVisible(), true, 'disconnected startup still offers the synthetic demo');
+    assert.equal(scanCalls, 0, 'disconnected startup must not request discovery');
+    await page.locator('#scene-demo-button').click();
+    await page.locator('#demo-banner').waitFor({ state: 'visible' });
+    assert.ok(Number(await page.locator('#stat-total').innerText()) > 1, 'generated demo can be explored with no connected adapter');
+    assert.equal(await page.locator('#scan-button').isDisabled(), true, 'demo must not enable discovery without an adapter');
+    await page.locator('#leave-demo').click();
+    await page.locator('#demo-banner').waitFor({ state: 'hidden' });
+    assert.equal(await page.locator('#device-list button').count(), 0, 'leaving disconnected demo restores the empty real view');
+    assert.equal(await page.locator('#scan-button').isDisabled(), true);
+    assert.equal(await page.locator('#retry-button').isVisible(), true, 'adapter retry returns after leaving demo');
+    await page.locator('#retry-button').click();
+    await page.waitForFunction(() => !document.querySelector('#retry-button').hidden && document.querySelector('#scene-empty-title').textContent.includes('没有可用'));
+    assert.equal(adapterReads, 2, 'disconnected retry re-reads adapters once');
+    assert.equal(scanCalls, 0, 'opening and leaving demo or re-reading missing adapters must not request discovery');
+  });
 }
 
 async function adapterReplacement(context) {
@@ -132,6 +232,8 @@ async function main() {
   const checks = [];
   try {
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+    await startupNoImplicitDiscovery(context); checks.push('idle open/reload, adapter switching and demo stay passive; explicit discovery posts selected adapter once');
+    await disconnectedDemoStartup(context); checks.push('disconnected startup and adapter retry stay passive; generated demo opens and exits without a scan');
     await adapterReplacement(context); checks.push('adapter A disconnect → re-enumerate B → one B scan');
     await resumeExistingScan(context); checks.push('reopen during B scan with old A result → select completed B');
     await conflictWhileDemo(context); checks.push('409 joins B scan → demo stays isolated → return to completed B');

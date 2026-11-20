@@ -40,7 +40,7 @@
 
 ### Task 3: Novice-facing cleanup dialog
 
-**Files:** Create `web/data-cleanup.js`; modify `web/index.html`, `web/app.js`, `web/style.css`; test with `tools/ui_data_cleanup.cjs`.
+**Files:** Create `web/data-cleanup.js`; modify `web/index.html`, `web/app.js`, `web/style.css`; cleanup browser coverage is included in `tools/ui_upgrade.cjs`.
 
 - [x] Add a footer action and accessible hacker-theme dialog listing count-only network records.
 - [x] Require a fresh checkbox confirmation for the selected network; disable deletion during active tasks, monitor, loading, or empty catalogue.
