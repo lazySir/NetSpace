@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--no-network', action='store_true',
                         help='Check startup, assets and shutdown only; never enumerate or probe the LAN')
     args = parser.parse_args()
-    distribution = Path(__file__).resolve().parent.parent / 'dist' / 'NetSpace-Windows-x64.zip'
+    distribution = Path(args.exe).resolve().parent / 'NetSpace-Windows-x64.zip'
     with ZipFile(str(distribution)) as archive:
         archive_names = set(archive.namelist())
         assert 'FUSE-LICENSE.txt' in archive_names, 'Windows distribution must include the vendored Fuse.js license'
@@ -30,7 +30,8 @@ def main():
 
     def request(path, data=None, timeout=30):
         if args.no_network and path.startswith('/api/'):
-            assert path in {'/api/health', '/api/state', '/api/history', '/api/device-check', '/api/shutdown'}
+            assert path in {'/api/health', '/api/state', '/api/history', '/api/device-check',
+                            '/api/web-header-check', '/api/shutdown'}
             assert data is None or path == '/api/shutdown', 'No network tasks may start in no-network mode'
         payload = None if data is None else json.dumps(data).encode('utf-8')
         req = urllib.request.Request(base + path, data=payload,
@@ -77,7 +78,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.14.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.15.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -98,7 +99,7 @@ def main():
     try:
         wait_start()
         checks.append('bundled runtime without Python on PATH')
-        for resource in ('/', '/app.js', '/device-check.js', '/device-check-report.js', '/workspace.js', '/csv.js', '/identity.js', '/scene.js', '/style.css',
+        for resource in ('/', '/app.js', '/device-check.js', '/device-check-report.js', '/web-header-check.js', '/workspace.js', '/csv.js', '/identity.js', '/scene.js', '/style.css',
                          '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js', '/vendor/fuse.min.js'):
             bundled = request(resource)
             assert len(bundled) > 100, resource
@@ -120,6 +121,7 @@ def main():
             assert not state['monitor']['enabled']
             assert request('/api/history')['scans'] == []
             assert request('/api/device-check')['status'] == 'idle'
+            assert request('/api/web-header-check')['status'] == 'idle'
             checks.append('discovery, monitor and device check remain idle')
             request('/api/shutdown', {})
             assert process.wait(timeout=15) == 0

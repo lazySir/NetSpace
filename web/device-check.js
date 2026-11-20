@@ -170,6 +170,7 @@ export function createDeviceCheck({ ui, api, readContext, rerender }) {
   return {
     sync,
     get busy() { return starting || state.status === 'checking'; },
+    snapshot() { return { ...state, results: Array.isArray(state.results) ? state.results.map(item => ({ ...item })) : [] }; },
     observe(value) { if (!ownRun && !starting && value) { try { update(value); } catch {} } },
     destroy() { destroyed = true; taskGeneration++; close(); clearTimeout(timer); clearInterval(freshnessTimer); },
   };

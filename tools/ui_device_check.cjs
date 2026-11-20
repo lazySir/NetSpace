@@ -52,6 +52,7 @@ async function run() {
     const a = snapshot(adapters[0], 'test-network-A', 1), b = snapshot(adapters[1], 'test-network-B', 2);
     const old = { ...a, scanId: 3, scannedAt: '2026-01-01T00:00:00Z' };
     let live = a, scanStatus = 'complete', check = { status: 'idle', completed: 0, total: 7, results: [], networkId: null, deviceKey: null };
+    let webHeaderCheck = { status: 'idle', completed: 0, total: 0, results: [], networkId: null, deviceKey: null, scanId: null, runId: null };
     let failNext = null, delayNextPost = false, releasePost = null, checkReads = 0, replaceOnCancel = null;
     let holdNextCheckRead = false, releaseCheckRead = null;
     await context.route('**/*', async route => {
@@ -61,7 +62,7 @@ async function run() {
       const respond = (json, status = 200) => route.fulfill({ status, json });
       if (method === 'POST') posts.push({ path: url.pathname, body: request.postDataJSON(), origin: request.headers().origin });
       if (url.pathname === '/api/interfaces') return respond({ interfaces: adapters, error: null });
-      if (url.pathname === '/api/state') return respond({ status: scanStatus, progress: {}, result: live, error: null, monitor, deviceCheck: check });
+      if (url.pathname === '/api/state') return respond({ status: scanStatus, progress: {}, result: live, error: null, monitor, deviceCheck: check, webHeaderCheck });
       if (url.pathname === '/api/monitor') return respond(monitor);
       if (url.pathname === '/api/networks') return respond({ networks: [a, b].map(x => ({ id: x.networkId, label: x.interface.alias, cidr: x.interface.cidr })) });
       if (url.pathname === '/api/history') return respond({ scans: [{ id: 3, networkId: a.networkId, scannedAt: old.scannedAt, deviceCount: 3 }] });
@@ -87,6 +88,19 @@ async function run() {
         check = checking(body.networkId, body.deviceKey, body.scanId);
         if (delayNextPost) { delayNextPost = false; const held = { ...check }; await new Promise(resolve => { releasePost = resolve; }); return respond(held, 202); }
         return respond(check, 202);
+      }
+      if (url.pathname === '/api/web-header-check/cancel') {
+        const matches = request.postDataJSON().runId === webHeaderCheck.runId && webHeaderCheck.status === 'checking';
+        if (matches) webHeaderCheck = { ...webHeaderCheck, status: 'cancelled' };
+        return respond({ cancelled: matches });
+      }
+      if (url.pathname === '/api/web-header-check') {
+        if (method === 'GET') return respond(webHeaderCheck);
+        if (failNext) { const failure = failNext; failNext = null; return respond({ error: failure.error }, failure.status); }
+        const body = request.postDataJSON();
+        if (body.scanId !== live.scanId) return respond({ error: '设备记录已更新，请重新打开检查窗口' }, 409);
+        webHeaderCheck = { status: 'checking', completed: 0, total: 1, results: [], networkId: body.networkId, deviceKey: body.deviceKey, scanId: body.scanId, runId: (++runSequence).toString(16).padStart(32, '0') };
+        return respond(webHeaderCheck, 202);
       }
       if (url.pathname === '/api/shutdown') return respond({ status: 'stopped' });
       return respond({ error: 'Unexpected test API: ' + url.pathname }, 500);
@@ -157,6 +171,41 @@ async function run() {
     assert.equal(await page.locator('#device-check-close').isVisible(), true, 'the close action remains reachable in a narrow scrolling dialog');
     await page.screenshot({ path: path.join(output, 'netspace-device-check-320-actions.png') });
     await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.locator('#device-check-close').click();
+    await page.locator('#device-list button[data-device-id="192.0.2.30"]').click();
+    assert.equal(await page.locator('#web-header-check-open').isDisabled(), false, 'the header check needs a completed service check for the selected device');
+    await page.locator('#web-header-check-open').click();
+    const headerDialog = page.getByRole('dialog', { name: '查看网页安全响应头' });
+    await headerDialog.waitFor({ state: 'visible' });
+    assert.match(await page.locator('#web-header-check-ports').innerText(), /HTTP 网页（TCP 80）/);
+    assert.doesNotMatch(await page.locator('#web-header-check-ports').innerText(), /443/, 'only confirmed-open web ports are offered');
+    assert.equal(await page.locator('#web-header-check-consent').isChecked(), false);
+    assert.equal(await page.locator('#web-header-check-start').isDisabled(), true);
+    await page.locator('#web-header-check-consent').check(); await page.locator('#web-header-check-start').click();
+    await page.waitForFunction(() => document.querySelector('#web-header-check-cancel').disabled === false);
+    const headerPost = posts.find(item => item.path === '/api/web-header-check');
+    assert.deepEqual(headerPost.body, { networkId: 'test-network-A', deviceKey: 'nas', scanId: 1, authorized: true }, 'browser sends neither an address nor a port list');
+    assert.equal(headerPost.origin, base);
+    assert.equal(await page.locator('#web-header-check-consent').isChecked(), false, 'authorization is consumed after one run');
+    webHeaderCheck = { ...webHeaderCheck, status: 'complete', completed: 1, results: [{ port: 80, scheme: 'http', status: 'complete', checks: [
+      { id: 'csp', title: '内容安全策略', status: 'missing' }, { id: 'nosniff', title: '文件类型保护', status: 'present' },
+      { id: 'referrer', title: '来源信息保护', status: 'present' }, { id: 'permissions', title: '浏览器功能限制', status: 'missing' },
+    ] }] };
+    await page.waitForFunction(() => document.querySelectorAll('#web-header-check-results li').length === 1);
+    const headerText = await page.locator('#web-header-check-results').innerText();
+    assert.match(headerText, /内容安全策略：缺少/);
+    assert.match(headerText, /文件类型保护：存在/);
+    assert.match(headerText, /已收到响应/);
+    assert.doesNotMatch(headerText, /已读取响应/);
+    assert.match(await page.locator('#web-header-check-status').innerText(), /不是漏洞诊断/);
+    await page.screenshot({ path: path.join(images, 'netspace-web-header-check.png') });
+    await page.setViewportSize({ width: 320, height: 900 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'header dialog must fit a narrow screen');
+    await page.screenshot({ path: path.join(images, 'netspace-web-header-check-320.png') });
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await page.locator('#web-header-check-close').click();
+    assert.equal(await page.locator('#web-header-check-consent').isChecked(), false, 'closing clears the consent checkbox');
+    await page.locator('#device-check-open').click();
     await page.locator('#device-check-consent').check(); await page.locator('#device-check-start').click();
     await page.waitForFunction(() => !document.querySelector('#device-check-cancel').disabled);
     await page.evaluate(() => window.setDeviceCheckTimeOffset(350000));
@@ -256,7 +305,7 @@ async function run() {
     assert.equal(posts.filter(x => x.path === '/api/scan').length, 0, 'the fixture must never request LAN discovery');
     assert.ok(checkReads > 0, 'running checks must refresh status with GET');
     assert.deepEqual(external, []); assert.deepEqual(unexpectedApi, []); assert.deepEqual(errors, []);
-    console.log('Device check UI passed: explicit consent, scan-bound starts, run-bound cancellation, delayed old-run isolation, complete/partial text downloads, expiry, disabled views, same-origin POST and 320 px layout; all APIs mocked, no scans or target connections.');
+    console.log('Device check UI passed: service/header checks require fresh consent, header ports derive from confirmed-open results, no browser-supplied target or port, safe fixed-result rendering, delayed-run isolation, report download, expiry, same-origin APIs and 320 px layouts; all APIs mocked, no scans or target connections.');
   } finally { if (browser) await browser.close(); await new Promise(resolve => server.close(resolve)); }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

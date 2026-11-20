@@ -28,9 +28,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from monitoring import MonitorController
 from network_store import NetworkStore
 from device_check import SERVICES, probe_tcp_port
+from web_header_check import CHECKS_BY_SCHEME, check_http_headers
 
 
-VERSION = '1.14.0'
+VERSION = '1.15.0'
 DEVICE_CHECK_FRESH_SECONDS = 300
 RESOURCE_ROOT = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent))
 WEB_ROOT = RESOURCE_ROOT / 'web'
@@ -60,7 +61,7 @@ def content_security_policy():
 
 
 class ScanState:
-    def __init__(self, interfaces_provider, scanner, store, port_probe=None):
+    def __init__(self, interfaces_provider, scanner, store, port_probe=None, web_header_checker=None):
         self.interfaces_provider = interfaces_provider
         self.scanner = scanner
         self.lock = threading.RLock()
@@ -77,6 +78,11 @@ class ScanState:
                              'networkId': None, 'deviceKey': None, 'scanId': None, 'runId': None}
         self.device_check_cancel = None
         self.device_check_thread = None
+        self.web_header_check = {'status': 'idle', 'completed': 0, 'total': 0, 'results': [],
+                                 'networkId': None, 'deviceKey': None, 'scanId': None, 'runId': None}
+        self.web_header_check_cancel = None
+        self.web_header_check_thread = None
+        self.web_header_checker = web_header_checker
         self.persistence_lock = threading.RLock()
         self.monitor_settings_lock = threading.RLock()
         self.closed = False
@@ -93,7 +99,8 @@ class ScanState:
             snapshot = copy.deepcopy({'status': self.status, 'progress': self.progress,
                                       'result': self.result, 'error': self.error,
                                       'scanInterfaceId': self.scan_interface_id,
-                                      'deviceCheck': self.device_check})
+                                      'deviceCheck': self.device_check,
+                                      'webHeaderCheck': self.web_header_check})
         snapshot['monitor'] = self.monitor_snapshot()
         return snapshot
 
@@ -101,9 +108,18 @@ class ScanState:
         with self.lock:
             return copy.deepcopy(self.device_check)
 
+    def web_header_check_snapshot(self):
+        with self.lock:
+            return copy.deepcopy(self.web_header_check)
+
+    @staticmethod
+    def _task_active(value):
+        return value['status'] == 'checking'
+
     def is_scanning(self):
         with self.lock:
-            return self.status == 'scanning' or self.device_check['status'] == 'checking'
+            return (self.status == 'scanning' or self._task_active(self.device_check) or
+                    self._task_active(self.web_header_check))
 
     def cancel_device_check(self, run_id):
         if not isinstance(run_id, str) or re.fullmatch(r'[0-9a-f]{32}', run_id) is None:
@@ -113,6 +129,16 @@ class ScanState:
                     self.device_check['runId'] != run_id):
                 return False
             self.device_check_cancel.set()
+            return True
+
+    def cancel_web_header_check(self, run_id):
+        if not isinstance(run_id, str) or re.fullmatch(r'[0-9a-f]{32}', run_id) is None:
+            raise ValueError('停止检查请求缺少有效的运行标识，请刷新页面后重试。')
+        with self.lock:
+            if (self.web_header_check['status'] != 'checking' or self.web_header_check_cancel is None or
+                    self.web_header_check['runId'] != run_id):
+                return False
+            self.web_header_check_cancel.set()
             return True
 
     def _resolve_check_target(self, network_id, device_key, expected_scan_id):
@@ -194,9 +220,11 @@ class ScanState:
             with self.lock:
                 if self.stopping.is_set() or self.closed:
                     raise ValueError('应用正在退出。')
-                if self.status == 'scanning' or self.device_check['status'] == 'checking':
+                if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
                     return False
                 target, source_ip, scan_id = self._resolve_check_target(network_id, device_key, scan_id)
+                self.web_header_check = {'status': 'idle', 'completed': 0, 'total': 0, 'results': [],
+                                         'networkId': None, 'deviceKey': None, 'scanId': None, 'runId': None}
                 cancel_event = threading.Event()
                 self.device_check_cancel = cancel_event
                 self.device_check = {'status': 'checking', 'completed': 0,
@@ -213,6 +241,99 @@ class ScanState:
                     self.device_check_cancel = None
                     raise
         return True
+
+    def start_web_header_check(self, network_id, device_key, scan_id, authorized):
+        if authorized is not True:
+            raise ValueError('请先确认你已获得此设备所有者授权。')
+        if type(scan_id) is not int or scan_id <= 0:
+            raise ValueError('发现记录标识无效，请刷新页面后重试。')
+        with self.persistence_lock:
+            with self.lock:
+                if self.stopping.is_set() or self.closed:
+                    raise ValueError('应用正在退出。')
+                if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
+                    return False
+                target, source_ip, scan_id = self._resolve_check_target(network_id, device_key, scan_id)
+                service = self.device_check
+                if (service.get('status') != 'complete' or service.get('networkId') != network_id or
+                        service.get('deviceKey') != device_key or service.get('scanId') != scan_id):
+                    raise ValueError('请先完成这台设备本次发现结果对应的服务检查。')
+                ports = tuple(sorted({item.get('port') for item in service.get('results', [])
+                                      if isinstance(item, dict) and item.get('status') == 'open'
+                                      and item.get('port') in (80, 443)}))
+                if not ports:
+                    raise ValueError('本次服务检查没有确认开放的网页端口，因此没有可检查的对象。')
+                cancel_event = threading.Event()
+                self.web_header_check_cancel = cancel_event
+                self.web_header_check = {'status': 'checking', 'completed': 0, 'total': len(ports), 'results': [],
+                                         'networkId': network_id, 'deviceKey': device_key, 'scanId': scan_id,
+                                         'runId': uuid.uuid4().hex}
+                thread = threading.Thread(target=self._run_web_header_check,
+                                          args=(target, source_ip, ports, cancel_event),
+                                          daemon=True, name='netspace-web-header-check')
+                self.web_header_check_thread = thread
+                try:
+                    thread.start()
+                except Exception:
+                    self.web_header_check = {**self.web_header_check, 'status': 'error'}
+                    self.web_header_check_cancel = None
+                    raise
+        return True
+
+    @staticmethod
+    def _safe_web_header_results(value, allowed_ports):
+        if not isinstance(value, dict) or not isinstance(value.get('results'), list):
+            return []
+        safe = []
+        for port in allowed_ports:
+            scheme = 'https' if port == 443 else 'http'
+            known = CHECKS_BY_SCHEME[scheme]
+            item = next((entry for entry in value['results']
+                         if isinstance(entry, dict) and entry.get('port') == port), None)
+            if not item:
+                continue
+            status = item.get('status')
+            if status not in {'complete', 'unavailable', 'redirect_blocked'}:
+                status = 'unavailable'
+            checks = []
+            if status == 'complete':
+                supplied = {entry.get('id'): entry.get('status') for entry in item.get('checks', [])
+                            if isinstance(entry, dict)} if isinstance(item.get('checks'), list) else {}
+                checks = [{'id': check['id'], 'title': check['title'],
+                           'status': supplied.get(check['id']) if supplied.get(check['id']) in {'present', 'missing'} else 'unavailable',
+                           'recommendation': check['recommendation']} for check in known]
+            safe.append({'port': port, 'scheme': scheme, 'status': status, 'checks': checks})
+        return safe
+
+    def _run_web_header_check(self, target, source_ip, ports, cancel_event):
+        completed = 0
+        try:
+            def progress(done, total):
+                nonlocal completed
+                completed = max(0, min(len(ports), int(done)))
+                with self.lock:
+                    if self.web_header_check_cancel is cancel_event:
+                        self.web_header_check = {**self.web_header_check, 'status': 'checking',
+                                                 'completed': completed, 'total': len(ports)}
+
+            checker = self.web_header_checker or check_http_headers
+            value = checker(target, source_ip, ports, cancel_event, progress=progress)
+            safe_results = self._safe_web_header_results(value, ports)
+            with self.lock:
+                if self.web_header_check_cancel is cancel_event:
+                    state = 'cancelled' if cancel_event.is_set() or self.stopping.is_set() else 'complete'
+                    self.web_header_check = {**self.web_header_check, 'status': state,
+                                             'completed': completed if state == 'cancelled' else len(safe_results),
+                                             'total': len(ports), 'results': safe_results}
+                    self.web_header_check_cancel = None
+        except Exception:
+            # Peer-controlled exception strings can contain addresses or response data.
+            LOGGER.error('Web security header check failed')
+            with self.lock:
+                if self.web_header_check_cancel is cancel_event:
+                    self.web_header_check = {**self.web_header_check, 'status': 'error',
+                                             'completed': completed, 'total': len(ports), 'results': []}
+                    self.web_header_check_cancel = None
 
     def _run_device_check(self, target, source_ip, cancel_event):
         results = []
@@ -289,6 +410,8 @@ class ScanState:
         with self.lock:
             if self.device_check_cancel is not None:
                 self.device_check_cancel.set()
+            if self.web_header_check_cancel is not None:
+                self.web_header_check_cancel.set()
         self.monitor.close()
         # An in-progress scanner can finish later, but cannot save after close.
         with self.persistence_lock:
@@ -304,7 +427,7 @@ class ScanState:
         with self.lock:
             if self.stopping.is_set():
                 raise ValueError('应用正在退出')
-            if self.status == 'scanning' or self.device_check['status'] == 'checking':
+            if self.status == 'scanning' or self.device_check['status'] == 'checking' or self.web_header_check['status'] == 'checking':
                 return False
             if self.interfaces is None:
                 self.get_interfaces()
@@ -474,6 +597,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._respond(200, {'app': 'NetSpace', 'version': VERSION})
         elif path == '/api/device-check':
             self._respond(200, self.server.state.device_check_snapshot())
+        elif path == '/api/web-header-check':
+            self._respond(200, self.server.state.web_header_check_snapshot())
         elif path == '/api/backup':
             if urlsplit(self.path).query:
                 self._respond(400, {'error': '备份接口不接受查询参数'})
@@ -557,7 +682,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path not in ('/api/scan', '/api/shutdown', '/api/profile', '/api/events/read',
-                        '/api/monitor', '/api/device-check', '/api/device-check/cancel'):
+                        '/api/monitor', '/api/device-check', '/api/device-check/cancel',
+                        '/api/web-header-check', '/api/web-header-check/cancel'):
             self._respond(404, {'error': '接口不存在'})
             return
         try:
@@ -585,12 +711,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             with self.server.state.lock:
                 if self.server.state.device_check_cancel is not None:
                     self.server.state.device_check_cancel.set()
+                if self.server.state.web_header_check_cancel is not None:
+                    self.server.state.web_header_check_cancel.set()
             self.server.state.monitor.close()
             self._respond(200, {'status': 'stopped'})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         try:
-            if path in ('/api/device-check', '/api/device-check/cancel'):
+            if path in ('/api/device-check', '/api/device-check/cancel',
+                        '/api/web-header-check', '/api/web-header-check/cancel'):
                 expected_origin = 'http://' + self.headers.get('Host', '').lower()
                 if self.headers.get('Origin') != expected_origin:
                     self._respond(403, {'error': '请从当前 NetSpace 页面启动这项检查'})
@@ -601,14 +730,26 @@ class RequestHandler(BaseHTTPRequestHandler):
                     cancelled = self.server.state.cancel_device_check(data['runId'])
                     self._respond(200, {'cancelled': cancelled})
                     return
+                if path == '/api/web-header-check/cancel':
+                    if set(data) != {'runId'}:
+                        raise ValueError('停止检查请求字段无效，请刷新页面后重试。')
+                    cancelled = self.server.state.cancel_web_header_check(data['runId'])
+                    self._respond(200, {'cancelled': cancelled})
+                    return
                 if set(data) != {'networkId', 'deviceKey', 'scanId', 'authorized'}:
                     raise ValueError('检查请求字段无效，请刷新页面后重试。')
-                started = self.server.state.start_device_check(
-                    data['networkId'], data['deviceKey'], data['scanId'], data['authorized'])
+                if path == '/api/device-check':
+                    started = self.server.state.start_device_check(
+                        data['networkId'], data['deviceKey'], data['scanId'], data['authorized'])
+                else:
+                    started = self.server.state.start_web_header_check(
+                        data['networkId'], data['deviceKey'], data['scanId'], data['authorized'])
                 if not started:
                     self._respond(409, {'error': '请等待当前发现或检查任务结束。'})
                 else:
-                    self._respond(202, self.server.state.device_check_snapshot())
+                    snapshot = (self.server.state.device_check_snapshot() if path == '/api/device-check'
+                                else self.server.state.web_header_check_snapshot())
+                    self._respond(202, snapshot)
                 return
             if path == '/api/profile':
                 network_id, device_key = data.get('networkId'), data.get('deviceKey')
@@ -642,7 +783,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             LOGGER.exception('Cannot start scan')
             message = (str(error) if path == '/api/scan' else
                        '无法完成设备检查，请检查授权和最新发现结果后重试。'
-                       if path.startswith('/api/device-check') else
+                       if path.startswith(('/api/device-check', '/api/web-header-check')) else
                        '保存本地记录失败，请检查存储空间后重试')
             self._respond(503, {'error': message})
 
@@ -651,7 +792,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def create_server(host='127.0.0.1', port=8765, interfaces_provider=None, scanner=None,
-                  store=None, port_probe=None):
+                  store=None, port_probe=None, web_header_checker=None):
     if host != '127.0.0.1':
         raise ValueError('NetSpace only listens on 127.0.0.1')
     if interfaces_provider is None or scanner is None:
@@ -659,7 +800,7 @@ def create_server(host='127.0.0.1', port=8765, interfaces_provider=None, scanner
         interfaces_provider = interfaces_provider or list_interfaces
         scanner = scanner or scan_network
     state = ScanState(interfaces_provider, scanner, store if store is not None else NetworkStore(),
-                      port_probe=port_probe)
+                      port_probe=port_probe, web_header_checker=web_header_checker)
     try:
         return NetSpaceServer((host, port), state)
     except Exception:

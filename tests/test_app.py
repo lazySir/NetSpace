@@ -262,7 +262,7 @@ class LocalServerTests(unittest.TestCase):
     def test_interfaces_and_initial_state(self):
         status, health = self.request('/api/health')
         self.assertEqual(status, 200)
-        self.assertEqual(health['version'], '1.14.0')
+        self.assertEqual(health['version'], '1.15.0')
         status, body = self.request('/api/interfaces')
         self.assertEqual(status, 200)
         self.assertEqual(body['interfaces'][0]['id'], '7')
