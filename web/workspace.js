@@ -1,5 +1,6 @@
 import { buildHistoryComparisonCsv, buildNetworkEventsCsv } from '/csv.js';
 import { deviceIdentity } from '/identity.js';
+import Fuse from '/vendor/fuse.min.js';
 const EMPTY_PROFILE = { alias: '', notes: '', group: '', known: false, ignored: false };
 const EVENT_LABELS = { new: '新设备', returned: '再次发现', not_seen: '本次未见', ip_changed: 'IP 已变化' };
 
@@ -13,6 +14,8 @@ export function createWorkspace(options) {
   let wasDemo = false;
   let networks = [], scans = [], events = [], records = [];
   let unreadCount = 0, archiveError = '', monitorError = '', loadingReplay = false;
+  let eventKindFilter = '', eventQuery = '', eventSearchIndex = null, eventSearchSignature = '';
+  let visibleEvents = [];
   let desktopNotificationsBusy = false;
   let networkSignature = '', historySignature = '', eventSignature = '', liveSignature = '';
   const drafts = new Map(), notifiedEvents = new Set();
@@ -199,15 +202,33 @@ export function createWorkspace(options) {
     finally { if (request === comparisonRequest && !destroyed) { comparisonLoading = false; rerender(); } }
   }
   function renderEvents() {
+    const networkEvents = events.filter(event => event.networkId === networkId);
+    const searchSignature = JSON.stringify([networkId, networkEvents]);
+    if (eventSearchSignature !== searchSignature) {
+      eventSearchSignature = searchSignature;
+      eventSearchIndex = networkEvents.length ? new Fuse(networkEvents, {
+        ignoreLocation: true, minMatchCharLength: 1, shouldSort: true, threshold: 0.32,
+        keys: ['name'],
+      }) : null;
+    }
+    const typedEvents = eventKindFilter ? networkEvents.filter(event => event.kind === eventKindFilter) : networkEvents;
+    if (eventQuery && /^[0-9.]+$/.test(eventQuery)) {
+      visibleEvents = typedEvents.filter(event => [event.ip, event.previousIp].some(value => String(value || '').includes(eventQuery)));
+    } else if (eventQuery && eventSearchIndex) {
+      const matches = new Set(eventSearchIndex.search(eventQuery).map(result => result.item.id));
+      visibleEvents = typedEvents.filter(event => matches.has(event.id) || [event.ip, event.previousIp].some(value => String(value || '').includes(eventQuery)));
+    } else visibleEvents = typedEvents;
     ui['unread-count'].textContent = String(unreadCount);
     ui['unread-count'].classList.toggle('has-unread', unreadCount > 0);
     ui['unread-count'].setAttribute('aria-label', unreadCount + ' 条未读提醒');
     ui['events-read'].disabled = unreadCount <= 0 || readonly() || busy;
-    ui['events-csv-button'].disabled = !networkId || !events.some(event => event.networkId === networkId) || readonly() || busy;
-    const signature = JSON.stringify([networkId, events]);
+    ui['events-csv-button'].disabled = !networkId || !visibleEvents.length || readonly() || busy;
+    const filtering = Boolean(eventKindFilter || eventQuery);
+    ui['event-filter-info'].textContent = filtering ? visibleEvents.length + ' / ' + networkEvents.length + ' 条匹配' : networkEvents.length + ' 条变化';
+    const signature = JSON.stringify([networkId, events, eventKindFilter, eventQuery]);
     if (signature !== eventSignature) {
       eventSignature = signature; ui['event-list'].replaceChildren();
-      for (const event of events) {
+      for (const event of visibleEvents) {
         const li = document.createElement('li'); li.classList.toggle('is-unread', !event.read && event.notify); li.dataset.eventId = String(event.id);
         const header = document.createElement('div'); header.className = 'event-header';
         const kind = document.createElement('span'); kind.textContent = EVENT_LABELS[event.kind] || '发现记录';
@@ -217,11 +238,14 @@ export function createWorkspace(options) {
         li.append(header, name, ip); ui['event-list'].append(li);
       }
     }
-    ui['events-empty'].hidden = events.length > 0;
+    ui['events-empty'].hidden = visibleEvents.length > 0;
+    ui['events-empty'].textContent = networkEvents.length && !visibleEvents.length
+      ? '没有匹配的变化记录。调整类型或关键词后重试。'
+      : '尚无变化记录。首次发现建立基准，后续变化将在这里显示。';
   }
   function exportNetworkEvents() {
     if (!networkId || readonly()) return;
-    const selectedEvents = events.filter(event => event.networkId === networkId);
+    const selectedEvents = visibleEvents;
     if (!selectedEvents.length) return;
     const network = networks.find(item => item.id === networkId);
     const exportedAt = new Date().toISOString();
@@ -230,7 +254,11 @@ export function createWorkspace(options) {
     const anchor = document.createElement('a'); anchor.href = url;
     anchor.download = 'netspace-EVENTS-' + exportedAt.replace(/[:.]/g, '-') + '.csv';
     document.body.append(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    showToast('已导出当前网络最近 ' + selectedEvents.length + ' 条变化记录');
+    showToast('已导出筛选后的 ' + selectedEvents.length + ' 条变化记录');
+  }
+  function resetEventFilters() {
+    eventKindFilter = ''; eventQuery = ''; eventSearchIndex = null; eventSearchSignature = '';
+    ui['event-kind-filter'].value = ''; ui['event-search'].value = '';
   }
   function renderProfile(result, device) {
     if (!device) { profileKey = ''; return; }
@@ -310,7 +338,7 @@ export function createWorkspace(options) {
       const nextNetworkId = !pinnedNetwork && liveId && networks.some(item => item.id === liveId)
         ? liveId : networks.some(item => item.id === networkId) ? networkId : networks[0]?.id || '';
       if (nextNetworkId !== networkId) {
-        networkId = nextNetworkId; resetComparison(); scans = []; events = []; records = []; unreadCount = 0; archiveError = '';
+        networkId = nextNetworkId; resetComparison(); resetEventFilters(); scans = []; events = []; records = []; unreadCount = 0; archiveError = '';
       }
       rerender();
       if (ready && (readLive || monitor.enabled) && options.readState().status !== 'scanning') {
@@ -348,7 +376,7 @@ export function createWorkspace(options) {
   });
   ui['network-filter'].addEventListener('change', () => {
     networkId = ui['network-filter'].value; pinnedNetwork = true; replayRequest++; replay = null; loadingReplay = false;
-    resetComparison();
+    resetComparison(); resetEventFilters();
     scans = []; events = []; records = []; unreadCount = 0; archiveError = ''; rerender(); loadNetworkRecords();
   });
   for (const id of ['history-compare-source', 'history-compare-target']) ui[id].addEventListener('change', () => {
@@ -402,6 +430,8 @@ export function createWorkspace(options) {
     catch (error) { archiveError = '未能标为已读：' + error.message; }
     finally { busy = false; rerender(); }
   });
+  ui['event-search'].addEventListener('input', () => { eventQuery = ui['event-search'].value.trim(); renderEvents(); });
+  ui['event-kind-filter'].addEventListener('change', () => { eventKindFilter = ui['event-kind-filter'].value; renderEvents(); });
   ui['events-csv-button'].addEventListener('click', exportNetworkEvents);
   return {
     get replayResult() { return replay; }, render, initialize: refresh, leaveReplay,

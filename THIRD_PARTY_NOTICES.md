@@ -10,6 +10,14 @@ Official package: https://registry.npmjs.org/three/-/three-0.187.0.tgz
 
 Vendored assets: `three.module.js`, `three.core.js`, `examples/jsm/controls/OrbitControls.js`.
 
+## Fuse.js 7.5.0
+
+Copyright 2017 Kirollos Risk. Apache License 2.0. The upstream license is included at `web/vendor/FUSE-LICENSE.txt` in source and `FUSE-LICENSE.txt` in the distribution.
+
+Official source: https://github.com/krisk/Fuse/tree/v7.5.0
+
+Vendored asset: `web/vendor/fuse.min.js` (`dist/fuse.min.mjs` from tag `v7.5.0`, upstream commit `45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a`).
+
 ## CPython
 
 The portable Windows application includes the CPython runtime. Python is distributed under the Python Software Foundation License and related licenses; the complete license from the build runtime is included as `PYTHON-LICENSE.txt` in the distribution.

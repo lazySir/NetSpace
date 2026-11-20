@@ -38,9 +38,11 @@ async function run() {
   const errors = [];
   const cspViolations = [];
   const external = [];
+  let fuseAssetResponse = null;
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', message => { if (/content security policy/i.test(message.text())) cspViolations.push(message.text()); });
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith(base + '/')) external.push(request.url()); });
+  page.on('response', response => { if (new URL(response.url()).pathname === '/vendor/fuse.min.js') fuseAssetResponse = response; });
   let current = { status: 'idle', progress: { phase: 'idle', completed: 0, total: 0, message: '准备就绪' }, result: null, error: null };
   let failBackup = false;
   await page.route('**/api/interfaces', route => route.fulfill({ json: { interfaces, error: null } }));
@@ -55,6 +57,7 @@ async function run() {
     : route.fulfill({ status: 200, contentType: 'application/vnd.sqlite3', headers: { 'Content-Disposition': 'attachment; filename="NetSpace-backup-20261120-120000-123456.db"', 'Cache-Control': 'no-store' }, body: Buffer.from('SQLite format 3\0fixture') }));
   await page.route('**/api/shutdown', route => route.fulfill({ json: { status: 'stopped' } }));
   const documentResponse = await page.goto(base, { waitUntil: 'networkidle' });
+  assert.ok(fuseAssetResponse && fuseAssetResponse.ok(), 'vendored Fuse.js should load successfully from the local app');
   const policy = documentResponse.headers()['content-security-policy'] || '';
   assert.match(policy, /default-src 'self'/, 'document response should enforce its CSP');
   assert.match(policy, /object-src 'none'/, 'document response should block embedded objects');
@@ -248,7 +251,7 @@ async function run() {
   assert.deepEqual(cspViolations, [], 'browser must report no CSP violations while modules and scene load');
   assert.deepEqual(external, [], 'app must not require any external resources');
   assert.equal(await page.locator('#backup-button').isDisabled(), true, 'backup is disabled after the service stops');
-  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'JSON and filtered CSV exports', 'CSV UTF-8 BOM and formula-injection/quoting protection', 'local backup download, retry, shutdown and mobile visibility', 'adapter switching', 'camera controls', '375px and 320px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
+  console.log(JSON.stringify({ result: 'PASS', checks: ['CSP response', 'no CSP violations', 'vendored Fuse.js loaded locally', 'real layout', 'review queue and filter composition', 'node selection', 'search', 'demo isolation', 'JSON and filtered CSV exports', 'CSV UTF-8 BOM and formula-injection/quoting protection', 'local backup download, retry, shutdown and mobile visibility', 'adapter switching', 'camera controls', '375px and 320px responsive', 'reduced motion', 'offline assets'], screenshots: output }));
   await browser.close();
   testBrowser = null;
 }

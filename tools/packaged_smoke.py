@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import urllib.request
+from zipfile import ZipFile
 
 
 def main():
@@ -16,6 +17,11 @@ def main():
     parser.add_argument('--exe', default='dist/NetSpace.exe')
     parser.add_argument('--port', type=int, default=8766)
     args = parser.parse_args()
+    distribution = Path(__file__).resolve().parent.parent / 'dist' / 'NetSpace-Windows-x64.zip'
+    with ZipFile(str(distribution)) as archive:
+        archive_names = set(archive.namelist())
+        assert 'FUSE-LICENSE.txt' in archive_names, 'Windows distribution must include the vendored Fuse.js license'
+        assert 'THIRD_PARTY_NOTICES.md' in archive_names, 'Windows distribution must include third-party notices'
     executable = str(Path(args.exe).resolve())
     base = 'http://127.0.0.1:{}'.format(args.port)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -66,7 +72,7 @@ def main():
                 raise RuntimeError('Packaged application exited before startup')
             try:
                 health = request('/api/health', timeout=1)
-                assert health == {'app': 'NetSpace', 'version': '1.11.0'}
+                assert health == {'app': 'NetSpace', 'version': '1.12.0'}
                 break
             except Exception:
                 if time.monotonic() > deadline:
@@ -88,7 +94,7 @@ def main():
         wait_start()
         checks.append('bundled runtime without Python on PATH')
         for resource in ('/', '/app.js', '/workspace.js', '/csv.js', '/identity.js', '/scene.js', '/style.css',
-                         '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js'):
+                         '/vendor/three.module.js', '/vendor/three.core.js', '/vendor/OrbitControls.js', '/vendor/fuse.min.js'):
             bundled = request(resource)
             assert len(bundled) > 100, resource
             policy = response_headers(resource).get('Content-Security-Policy', '')

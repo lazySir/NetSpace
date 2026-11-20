@@ -87,7 +87,8 @@ async function run() {
     const events = [
       { id: 11, networkId: 'network-A', scanId: 2, deviceKey: 'workstation', kind: 'new', ip: a.interface.ip, previousIp: null, name: '工作站', occurredAt: a.scannedAt, read: false, notify: true },
       { id: 10, networkId: 'network-A', scanId: 2, deviceKey: 'gateway', kind: 'returned', ip: a.interface.gateway, previousIp: null, name: '路由器', occurredAt: a.scannedAt, read: true, notify: false },
-      { id: 9, networkId: 'network-A', scanId: 2, deviceKey: 'printer', kind: 'ip_changed', ip: '192.168.50.31', previousIp: '192.168.50.30', name: '打印机', occurredAt: a.scannedAt, read: true, notify: false },
+      { id: 9, networkId: 'network-A', scanId: 2, deviceKey: 'printer', kind: 'ip_changed', ip: '192.168.50.31', previousIp: '192.168.50.30', name: '客厅网络打印机', occurredAt: a.scannedAt, read: true, notify: false },
+      { id: 7, networkId: 'network-A', scanId: 2, deviceKey: 'printer-2', kind: 'ip_changed', ip: '192.168.50.130', previousIp: '192.168.50.129', name: '书房打印机', occurredAt: a.scannedAt, read: true, notify: false },
       { id: 8, networkId: 'network-A', scanId: 2, deviceKey: 'camera', kind: 'not_seen', ip: '192.168.50.32', previousIp: null, name: '摄像头', occurredAt: a.scannedAt, read: true, notify: false },
       { id: 1002, networkId: 'network-B', scanId: 3, deviceKey: 'foreign-device', kind: 'new', ip: '192.168.60.45', previousIp: null, name: '其他网络设备', occurredAt: b.scannedAt, read: false, notify: true },
     ];
@@ -236,6 +237,38 @@ async function run() {
     await page.locator('#event-list').filter({ hasText: '新设备' }).waitFor();
     assert.equal(await page.locator('#unread-count').innerText(), '1');
     assert.equal(await page.locator('#events-csv-button').isDisabled(), false, 'loaded live network events should enable CSV export');
+    assert.equal(await page.locator('#event-kind-filter').count(), 1, 'network events should expose a type filter');
+    assert.equal(await page.locator('#event-search').count(), 1, 'network events should expose a text search');
+    assert.equal(await page.locator('#event-list li').count(), 5, 'all selected-network events should be visible before filtering');
+    const eventControlWidths = await page.evaluate(() => ['#event-search', '#event-kind-filter'].map(selector => document.querySelector(selector).getBoundingClientRect().width));
+    assert.ok(Math.abs(eventControlWidths[0] - eventControlWidths[1]) < 4, 'event search and type filter should fill the narrow workspace panel equally');
+    await page.locator('#event-kind-filter').selectOption('ip_changed');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['9', '7'], 'event type filter should keep only matching event kinds');
+    assert.equal(await page.locator('#unread-count').innerText(), '1', 'view filters should not change the selected network unread total');
+    await page.locator('#event-search').fill('客厅网络打色机');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['9'], 'fuzzy event search should tolerate a small device-name typo and compose with the type filter');
+    await page.locator('#event-kind-filter').selectOption('');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['9'], 'clearing the type filter should retain matching fuzzy search results');
+    await page.locator('#event-search').fill('50.30');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['9'], 'event search should match the previous address of an IP-change record');
+    await page.locator('#event-search').fill('30');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['9', '7'], 'IP queries should use literal substrings, so a short fragment can match both .30 and .130');
+    await page.locator('#event-search').fill('50.30');
+    const filteredEventsPromise = page.waitForEvent('download');
+    await page.locator('#events-csv-button').click();
+    const filteredEventsDownload = await filteredEventsPromise;
+    await filteredEventsDownload.saveAs(path.join(output, 'network-events-filtered.csv'));
+    const filteredEvents = parseCsv(fs.readFileSync(path.join(output, 'network-events-filtered.csv'), 'utf8').slice(1));
+    assert.equal(filteredEvents.length, 2, 'event CSV should include the header and only the visible filtered event');
+    assert.equal(filteredEvents[1][1], '9', 'event CSV should reuse the visible search result');
+    assert.equal(filteredEvents[1][6], '192.168.50.30', 'filtered event CSV should preserve the previous IP address');
+    await page.locator('#event-search').fill('完全不存在的虚构设备');
+    assert.equal(await page.locator('#event-list li').count(), 0, 'a non-matching query should hide every event');
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), true, 'event CSV should disable when the visible result is empty');
+    assert.ok((await page.locator('#events-empty').innerText()).includes('没有匹配'), 'empty search results should explain that filters found no events');
+    await page.locator('#event-search').fill('');
+    assert.equal(await page.locator('#event-list li').count(), 5, 'clearing event search should restore all current-network events');
+    assert.equal(await page.locator('#events-csv-button').isDisabled(), false, 'clearing event search should re-enable event CSV');
     events[0].name = '=HYPERLINK("https://example.invalid")<svg onload=alert(1)>新设备, "quoted"\r\nline two';
     await page.waitForFunction(() => document.querySelector('#event-list').textContent.includes('HYPERLINK('), null, { timeout: 5000 });
     assert.equal(await page.locator('#event-list svg').count(), 0, 'hostile event names must render as safe text');
@@ -249,7 +282,7 @@ async function run() {
     assert.equal(eventsCsvBytes.subarray(0, 3).toString('hex'), 'efbbbf', 'events CSV should include a UTF-8 BOM');
     const parsedEvents = parseCsv(eventsCsvBytes.subarray(3).toString('utf8'));
     assert.deepEqual(parsedEvents[0], ['来源', '事件编号', '导出时间', '事件时间', '变化类型', '设备名称', '之前 IP', '当前 IP', '网络范围', '说明']);
-    assert.equal(parsedEvents.length, 5, 'events CSV should contain the loaded network events and no other network');
+    assert.equal(parsedEvents.length, 6, 'events CSV should contain the loaded network events and no other network');
     assert.equal(parsedEvents.every(row => row.length === 10), true, 'each event row should retain the complete CSV shape');
     const formulaEventRow = parsedEvents.find(row => row[1] === '11');
     assert.equal(formulaEventRow[0], '本地网络变化记录');
@@ -411,9 +444,14 @@ async function run() {
     delayComparison = true; await page.locator('#history-compare-button').click();
     for (let retry = 0; !releaseComparison && retry < 40; retry++) await page.waitForTimeout(100);
     assert.ok(releaseComparison, 'fixture should hold an in-flight history comparison');
+    await page.locator('#tab-events').click();
+    await page.locator('#event-kind-filter').selectOption('new');
+    await page.locator('#event-search').fill('旧网络设备');
     await page.locator('#network-filter').selectOption('network-B');
     await page.waitForFunction(() => document.querySelector('#history-scan option[value="3"]'));
-    await page.locator('#tab-events').click();
+    assert.equal(await page.locator('#event-kind-filter').inputValue(), '', 'switching networks should clear the old event type filter');
+    assert.equal(await page.locator('#event-search').inputValue(), '', 'switching networks should clear the old event search');
+    assert.deepEqual(await page.locator('#event-list li').evaluateAll(rows => rows.map(row => row.dataset.eventId)), ['999'], 'the new network should show only its own changes after filters reset');
     await page.waitForFunction(() => !document.querySelector('#events-csv-button').disabled);
     assert.equal(await page.locator('#events-csv-button').isDisabled(), false, 'an event belonging to the selected network may be exported');
     const networkBCsvPromise = page.waitForEvent('download');

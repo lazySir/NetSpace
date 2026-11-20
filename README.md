@@ -3,7 +3,7 @@
 </div>
 
 <div align="center">
-  <code>NETSPACE v1.11.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
+  <code>NETSPACE v1.12.0</code> &nbsp; <code>WINDOWS 10 / 11</code> &nbsp; <code>LOCAL-FIRST</code>
   <br>
   <strong>扫描你的局域网，观察设备拓扑。</strong>
 </div>
@@ -31,9 +31,9 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 
 ![NetSpace 同一网络的历史快照比较：展示新增、IP 变化和本次未见设备](docs/images/netspace-history-comparison.png)
 
-变化记录画面与 CSV 内容使用测试生成的虚构设备和地址。
+变化记录画面与 CSV 内容使用测试生成的虚构设备和地址，展示类型筛选、名称模糊搜索、IP 精确搜索与 3D 关系视图。
 
-![NetSpace 网络变化记录与 CSV 导出入口](docs/images/netspace-events-export.png)
+![NetSpace 网络变化记录：名称模糊搜索、IP 精确片段匹配、类型筛选和 CSV 导出](docs/images/netspace-events-export.png)
 
 ## 能做什么
 
@@ -53,6 +53,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 13  DIFF CSV   导出两次历史快照之间的变化
 14  BACKUP     下载本地 SQLite 数据库备份
 15  EVENTS CSV 导出当前网络已加载的最近变化记录
+16  EVENT FILTER 按类型筛选；设备名称模糊搜索，IP 精确片段搜索
 ```
 
 - 记录新增、再次发现、本次未发现和 IP 变化；支持静音与按网络标记已读。
@@ -62,6 +63,7 @@ NetSpace 是一款 Windows 本地局域网设备发现与 3D 可视化工具。�
 - 历史差异 CSV 包含新增、IP 变化和本次未见设备，并保留起始/对比地址、状态和快照时间；“本次未见”不代表已确认离线。
 - 可主动下载一致性 SQLite 备份，包含设备档案、扫描历史、变化事件和设置；文件保存在浏览器下载位置，可能包含设备名称、IP 与 MAC，请妥善保管。
 - 可将当前所选网络已加载的最近 50 条变化记录导出为本地 CSV；文件包含设备名称和 IP。“本次未见”只表示此次扫描没有该记录，不代表已确认离线。
+- 变化记录支持按事件类型筛选；设备名称可容忍少量拼写差异，当前和旧 IP 使用连续文本片段匹配（例如搜索 `50.30`）。短片段可能同时匹配多个地址。CSV 只导出筛选后可见的记录。搜索在本机离线运行，不发送查询词或事件数据。
 - Three.js 和页面资源随项目提供，界面可以离线加载。
 - SQLite 设备档案和历史数据在应用重启后保留。
 - 可选桌面提醒需在界面中手动授权；无权限或不支持时继续使用页面内提醒。桌面提醒只在 NetSpace 页面打开期间运行，且不显示设备名称、IP 或 MAC。
@@ -154,7 +156,7 @@ Windows 构建后，可用打包冒烟检查验证独立运行环境、真实网
 python tools/packaged_smoke.py
 ```
 
-**当前验证记录**：84 项 Python 测试通过；Windows 单文件程序构建与打包运行、本地 SQLite 备份完整性与下载、网络变化 CSV 的字段/跨网络隔离/危险文本校验、历史快照差异 CSV、当前筛选导出、来源标记、过期请求隔离、恶意名称安全呈现及 320 px 布局检查通过。详细记录见 [docs/verification-1.11.0-2026-11-20.md](docs/verification-1.11.0-2026-11-20.md)。
+**当前验证记录**：84 项 Python 测试通过；Windows 单文件程序构建与打包运行、本地 SQLite 备份完整性与下载、事件类型与模糊搜索、筛选后 CSV、跨网络隔离、恶意名称安全呈现和 320 px 布局检查通过。详细记录见 [docs/verification-1.12.0-2026-11-20.md](docs/verification-1.12.0-2026-11-20.md)。
 
 ## 架构速览
 
@@ -183,7 +185,7 @@ Windows adapters / neighbor cache / native address resolution
 
 ## 第三方组件与授权
 
-项目内置 Three.js 0.187.0 和 OrbitControls，相关许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) 与 `web/vendor/THREE-LICENSE.txt`。Python 打包运行时的许可说明随 Windows 分发包提供。
+项目内置 Three.js 0.187.0、OrbitControls 和 Fuse.js 7.5.0；依赖固定并随程序本地提供，不使用 CDN。许可见 THIRD_PARTY_NOTICES.md、web/vendor/THREE-LICENSE.txt 和 web/vendor/FUSE-LICENSE.txt。Python 打包运行时的许可说明随 Windows 分发包提供。
 
 本仓库暂未指定项目自身的开源许可证。公开可见源码不代表自动授予复制、修改或分发许可；如需复用，请先联系作者确认。
 
@@ -269,3 +271,10 @@ Windows adapters / neighbor cache / native address resolution
 - 当前网络没有记录、已停止服务、历史回看或演示模式下，导出按钮不可用；导出前按当前网络筛选，避免混入其他网络的设备记录。
 - “本次未见”行清楚提示这不代表已确认离线；界面提示文件可能含设备名称和局域网 IP。
 - **验证**：浏览器检查覆盖事件分类、字段解析、中文编码、公式型名称、含逗号/引号/换行文本、跨网络隔离、50 条边界、历史/演示隔离、空记录禁用和 320 px 布局；Windows 打包程序、CSP 和现有回归检查通过。详见 [docs/verification-1.11.0-2026-11-20.md](docs/verification-1.11.0-2026-11-20.md)。
+
+### 1.12.0 — 网络变化筛选与模糊搜索（2026-11-20）
+
+- 变化记录页新增类型筛选和设备名称、当前 IP、旧 IP 搜索；Fuse.js 用于设备名称模糊匹配，IP 使用精确片段匹配，结果保持事件时间顺序。
+- 列表与 CSV 导出共用相同的筛选结果；空匹配时禁用导出并显示提示。筛选只作用于当前选中的网络，网络切换时自动清空；未读数量仍统计该网络全部未读事件。
+- 从 GitHub 固定引入 Fuse.js 7.5.0（Apache-2.0，commit 45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a），本地离线加载并保留上游许可证。
+- **验证**：浏览器回归覆盖容错名称搜索、类型与搜索组合、未读数保持、筛选后 CSV 字段、空结果禁用、网络切换清空、恶意名称纯文本和 320 px 布局；Python 测试、Windows 打包、许可文件随包、CSP 与无外部请求检查通过。详见 [docs/verification-1.12.0-2026-11-20.md](docs/verification-1.12.0-2026-11-20.md)。

@@ -55,3 +55,14 @@ Define a peer as needing review when it is not the local `self` record and its s
 - [x] Verify the combined review/status/search filter and the profile-save transition that removes a recognized record from the queue.
 - [x] Run all Python tests, browser smoke/recovery/upgrade checks, Windows build and packaged smoke; refresh and inspect the synthetic README screenshot.
 - [x] Add the dated README iteration and verification record; run `git diff --check`; commit and push `feat: add device review queue`.
+
+### Iteration 5: Network change filters and search (1.12.0)
+
+**Files:** `web/index.html`, `web/style.css`, `web/workspace.js`, `tools/ui_upgrade.cjs`, `tools/ui_smoke.cjs`, `tools/packaged_smoke.py`, `build.ps1`, `tests/test_app.py`, `THIRD_PARTY_NOTICES.md`, `README.md`, `docs/images/netspace-events-export.png`, `docs/verification-1.12.0-2026-11-20.md`.
+
+Reuse pinned upstream Fuse.js 7.5.0 for typo-tolerant device-name search. Match IP queries as literal substrings, compose type and text filters, and use the same selected-network result set for rendering and CSV export. Bundle the upstream license for offline Windows distribution.
+
+- [x] Add type filtering and name/IP search, with accessible text describing fuzzy name matching and exact IP matching.
+- [x] Verify search/filter composition, CSV parity, empty results, network isolation/reset, unread counts, untrusted text rendering, offline loading, and narrow layouts using synthetic fixtures.
+- [x] Add the dated README entry, third-party license attribution, screenshot, and verification record; build and smoke-test Windows distribution.
+- [x] Re-run all verification after the final search/attribution adjustments; commit and push `feat: filter and search network changes`.
